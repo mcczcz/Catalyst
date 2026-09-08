@@ -136,14 +136,24 @@ bool setOrbValue(ExperienceOrb& orb, DataItem& dataItem, int value) {
 
 } // namespace
 
+// 26.32 适配：ExperienceOrb::_handleMending 已被内联进虚函数 playerTouch，
+// 无法再单独钩取。改为钩住 playerTouch 整体：
+// - 无需经验修复时直接放行原版逻辑（纯经验拾取，与 26.20 不触发 _handleMending 等价）；
+// - 有可修复装备时按事件流程自行完成修复，再把剩余部分交还原版：
+//   装备修满后原版 mending 找不到受损装备 → 剩余经验直接给玩家并消耗经验球；
+//   经验球耗尽（新值为 0）时原版 mending 修复量为 0，不会再修复装备。
 LL_TYPE_INSTANCE_HOOK(
     PlayerMendingRepairEventHook,
     ll::memory::HookPriority::Normal,
     ExperienceOrb,
-    &ExperienceOrb::_handleMending,
+    &ExperienceOrb::$playerTouch,
     void,
     Player& player
 ) {
+    if (this->mRemoved) {
+        return origin(player);
+    }
+
     ItemStack const& originalTarget = EnchantUtils::getRandomDamagedItemWithMending(player);
     if (!isRepairableMendingItem(originalTarget)) {
         return origin(player);
@@ -183,6 +193,11 @@ LL_TYPE_INSTANCE_HOOK(
     );
     bus.publish(beforeEvent);
     if (beforeEvent.isCancelled()) {
+        // 26.20 语义：取消 = 不修复装备，经验球价值仍全额转为玩家经验。
+        // 26.32 中修复逻辑内联在 playerTouch 里，无法只跳过修复部分，
+        // 故手动完成等价收尾：全额经验 + 移除经验球。
+        player.addExperience(oldOrbValue);
+        this->remove();
         return;
     }
 
@@ -247,6 +262,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     auto* currentItem = getMendingTargetItem(player, *target);
     if (!currentItem) {
+        origin(player);
         return;
     }
 
@@ -254,6 +270,8 @@ LL_TYPE_INSTANCE_HOOK(
     int finalRepairAmount =
         std::max(0, static_cast<int>(originalItem.getDamageValue()) - static_cast<int>(finalItem.getDamageValue()));
     if (finalRepairAmount <= 0) {
+        // 修复未能实际写回：交还原版（含原版修复逻辑）兜底
+        origin(player);
         return;
     }
     int finalOrbValue = getOrbValue(*this);
@@ -271,6 +289,15 @@ LL_TYPE_INSTANCE_HOOK(
         finalOrbValue
     );
     bus.publish(afterEvent);
+
+    // 剩余价值的处理与经验球的消亡交还原版 playerTouch 收尾：
+    // - 装备已修满：原版 mending 找不到受损装备，直接把剩余经验给玩家后移除经验球；
+    // - 经验球耗尽：原版 mending 计算出的修复量为 0，不会再修复装备。
+    if (finalOrbValue > 0) {
+        origin(player);
+    } else {
+        this->remove();
+    }
 }
 
 CATALYST_HOOKED_EVENT_PAIR(

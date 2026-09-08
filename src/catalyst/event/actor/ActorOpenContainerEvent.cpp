@@ -92,9 +92,12 @@ LL_TYPE_INSTANCE_HOOK(
     void,
     ::Actor& actor
 ) {
-    static void** expectedBlockActorVftable = HopperBlockActor::$vftableForBlockActor();
+    // 26.32: HopperBlockActor::$startOpen 与 BrewingStandBlockActor::$startOpen 为同一实现（MCFOLD），
+    // 需要区分实际类型；而 VanillaBlockActor::$vftableForBlockActor 已无符号（MCNAPI），
+    // 故改用 BlockActor::mType 成员判断（纯成员访问，无需符号）
+    bool const isHopper = this->mType == BlockActorType::Hopper;
 
-    if (SafeCheckVftable(this, expectedBlockActorVftable)) {
+    if (isHopper) {
         auto* blockActor = static_cast<BlockActor*>(this);
 
         // 发布 Before 事件
@@ -109,7 +112,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     origin(actor);
 
-    if (SafeCheckVftable(this, expectedBlockActorVftable)) {
+    if (isHopper) {
         auto* blockActor = static_cast<BlockActor*>(this);
 
         // 发布 After 事件

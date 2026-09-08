@@ -67,8 +67,11 @@ LL_TYPE_INSTANCE_HOOK(
             ContainerID::Inventory,
             InventorySource::InventorySourceFlags::NoFlag
         };
-        auto& actions = mTransaction->getActions(source);
-        if (actions.size() == 1) {
+        // 26.32 适配：InventoryTransaction::getActions 已移除，直接查询公开的 mActions 映射
+        auto const& actionsMap = mTransaction->mActions.get();
+        auto const  actionsIt  = actionsMap.find(source);
+        if (actionsIt != actionsMap.end() && actionsIt->second.size() == 1) {
+            auto const&     actions = actionsIt->second;
             int              slot = actions[0].mSlot;
             ItemStack const& item = player.mInventory->mInventory->getItem(slot);
 

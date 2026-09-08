@@ -11,11 +11,13 @@
 #include "mc/world/actor/ActorDamageSource.h"
 #include "mc/world/actor/ActorEvent.h"
 #include "mc/world/actor/Mob.h"
-#include "mc/world/attribute/AttributeInstanceForwarder.h"
+#include "mc/world/attribute/AttributeBuff.h"
 #include "mc/world/attribute/AttributeBuffType.h"
+#include "mc/world/attribute/AttributeOperands.h"
+#include "mc/world/attribute/AttributeInstance.h"
 #include "mc/world/attribute/InstantaneousAttributeBuff.h"
+#include "mc/world/attribute/MutableAttributeWithContext.h"
 #include "mc/world/attribute/SharedAttributes.h"
-#include "mc/world/attribute/ValidMutableAttributeWithContext.h"
 #include "mc/world/effect/EffectDuration.h"
 #include "mc/world/effect/MobEffect.h"
 #include "mc/world/effect/MobEffectInstance.h"
@@ -58,7 +60,8 @@ LL_TYPE_INSTANCE_HOOK(
     std::optional<float>,
     ::ActorDamageSource const& killingDamage
 ) {
-    auto const damageCause = killingDamage.getCause();
+    // 26.32 适配：ActorDamageSource::getCause() 已移除，mCause 为公开成员
+    auto const& damageCause = killingDamage.mCause;
     if (
         damageCause == SharedTypes::Legacy::ActorDamageCause::Void
         || damageCause == SharedTypes::Legacy::ActorDamageCause::SelfDestruct
@@ -67,7 +70,8 @@ LL_TYPE_INSTANCE_HOOK(
     }
 
     auto const& beforeTotem = this->getEquippedTotem();
-    bool        hadTotem    = this->hasTotemEquipped();
+    // 26.32 适配：Mob::hasTotemEquipped 已移除，以“装备栏中存在图腾”为准
+    bool        hadTotem    = !beforeTotem.isNull();
 
     auto& bus = ll::event::EventBus::getInstance();
 
@@ -92,15 +96,37 @@ LL_TYPE_INSTANCE_HOOK(
 
     auto const effectsToApply = beforeEvent.effects();
     auto const& totem         = this->getEquippedTotem();
-    bool        hasTotem      = this->hasTotemEquipped();
+    bool        hasTotem      = !totem.isNull();
 
     std::optional<float> result;
     if (hasTotem) {
         // Restore health to exactly 1.0f, same behavior as vanilla totem protection path.
-        auto health = this->getValidMutableAttribute(SharedAttributes::HEALTH());
-        float const currentHealth = health->getCurrentValue();
-        InstantaneousAttributeBuff healthBuff(1.0f - currentHealth, AttributeBuffType::TotemOfUndying);
-        result = health->addBuff(healthBuff);
+        // 26.32 适配：getValidMutableAttribute 已移除，改用 getMutableAttribute；
+        // InstantaneousAttributeBuff 的构造函数已被内联进调用方，且基类 AttributeBuff
+        // 含纯虚函数无法直接实例化。改为在原始存储上调用基类构造 thunk（参数顺序为
+        // amount/operand/type），再换上 InstantaneousAttributeBuff 的 vftable 还原实例。
+        auto const healthCtx = this->getMutableAttribute(SharedAttributes::HEALTH());
+        auto*      health    = healthCtx.mInstance.get().mPtr;
+        if (health) {
+            float const currentHealth = health->mCurrentValue;
+
+            alignas(InstantaneousAttributeBuff) std::byte buffStorage[sizeof(InstantaneousAttributeBuff)];
+            auto* healthBuff = std::launder(reinterpret_cast<InstantaneousAttributeBuff*>(buffStorage));
+            static_cast<::AttributeBuff*>(healthBuff)
+                ->$ctor(
+                    1.0f - currentHealth,
+                    static_cast<int>(AttributeOperands::OperandCurrent),
+                    AttributeBuffType::TotemOfUndying
+                );
+            *reinterpret_cast<void***>(buffStorage) = InstantaneousAttributeBuff::$vftable();
+
+            // 26.32 适配：addBuff 现在返回 std::optional<float>，且需显式传入
+            // AttributeModificationContext（值传递）
+            auto addResult = health->addBuff(*healthBuff, healthCtx.mContext.get());
+            result         = addResult.has_value() ? std::optional<float>(1.0f) : std::nullopt;
+
+            healthBuff->~InstantaneousAttributeBuff();
+        }
 
         if (result) {
             this->removeAllEffects();
@@ -111,8 +137,10 @@ LL_TYPE_INSTANCE_HOOK(
                     return;
                 }
                 EffectDuration duration{};
-                duration.mValue = std::max(0, config.durationTicks);
-                MobEffectInstance effectInstance(effect->mId, duration, std::max(0, config.amplifier));
+                duration.mValue          = std::max(0, config.durationTicks);
+                // 26.32 适配：MobEffectInstance 3 参构造已移除，改用 2 参构造后手动设置 amplifier
+                MobEffectInstance effectInstance(effect->mId, duration);
+                effectInstance.mAmplifier  = std::max(0, config.amplifier);
                 effectInstance.mEffectVisible = config.visible;
                 this->addEffect(effectInstance);
             };

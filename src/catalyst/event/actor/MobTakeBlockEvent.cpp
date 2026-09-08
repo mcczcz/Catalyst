@@ -8,17 +8,12 @@ struct NamedMolangScript {};
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
-#include "mc/gameplayhandlers/CoordinatorResult.h"
+#include <algorithm>
 #include "mc/util/Random.h"
 #include "mc/util/VariantParameterList.h"
 #include "mc/world/actor/ActorDefinitionDescriptor.h"
 #include "mc/world/actor/Mob.h"
 #include "mc/world/actor/ai/goal/TakeBlockGoal.h"
-#include "mc/world/events/ActorEventCoordinator.h"
-#include "mc/world/events/ActorGameplayEvent.h"
-#include "mc/world/events/ActorGriefingBlockEvent.h"
-#include "mc/world/events/EventRef.h"
-#include "mc/world/events/MutableActorGameplayEvent.h"
 #include "mc/world/events/gameevents/GameEventRegistry.h"
 #include "mc/world/item/ItemStack.h"
 #include "mc/world/level/BlockPos.h"
@@ -49,9 +44,9 @@ LL_TYPE_INSTANCE_HOOK(TakeBlockGoalTickHook, HookPriority::Normal, TakeBlockGoal
     auto&     mobPos = mMob.getPosition();
     BlockPos  targetPos(mobPos);
 
-    auto& def     = mDefinition.get();
-    auto& xzRange = def.mXZRange.get();
-    auto& yRange  = def.mYRange.get();
+    // 26.32 适配：Definition 嵌套结构已拍平到 TakeBlockGoal 自身成员
+    auto& xzRange = mXZRange.get();
+    auto& yRange  = mYRange.get();
 
     int xzMin = xzRange.rangeMin;
     int xzMax = xzRange.rangeMax;
@@ -75,14 +70,20 @@ LL_TYPE_INSTANCE_HOOK(TakeBlockGoalTickHook, HookPriority::Normal, TakeBlockGoal
         return;
     }
 
-    auto& validBlocks = def.mValidBlocks.get();
+    auto& validBlocks = mValidBlocks.get();
     if (!validBlocks.empty()) {
-        if (!BlockDescriptor::anyMatch(validBlocks, block)) {
+        // 26.32 适配：静态 BlockDescriptor::anyMatch 已移除，改为逐个 matches
+        bool matched = std::any_of(
+            validBlocks.begin(),
+            validBlocks.end(),
+            [&block](BlockDescriptor const& desc) { return desc.matches(block); }
+        );
+        if (!matched) {
             return;
         }
     }
 
-    if (def.mRequiresLineOfSight) {
+    if (mRequiresLineOfSight) {
         Vec3 blockCenter((float)targetPos.x, (float)targetPos.y, (float)targetPos.z);
         if (!mMob.canSee(blockCenter, ShapeType::Collision)) {
             return;
@@ -98,27 +99,12 @@ LL_TYPE_INSTANCE_HOOK(TakeBlockGoalTickHook, HookPriority::Normal, TakeBlockGoal
         return;
     }
 
-    // 获取 ActorEventCoordinator 并发送事件
-    auto& eventCoordinator = level.getActorEventCoordinator();
-
-    ActorGriefingBlockEvent const event{
-        mMob.getEntityContext().getWeakRef(),
-        &block,
-        Vec3((float)targetPos.x, (float)targetPos.y, (float)targetPos.z),
-        nullptr
-    };
-
-    EventRef<ActorGameplayEvent<CoordinatorResult>> const eventRef(event);
-    using SendEventFunc =
-        CoordinatorResult (ActorEventCoordinator::*)(EventRef<ActorGameplayEvent<CoordinatorResult>> const&);
-    CoordinatorResult result =
-        (eventCoordinator.*static_cast<SendEventFunc>(&ActorEventCoordinator::sendEvent))(eventRef);
-    if (result != CoordinatorResult::Continue) {
-        return;
-    }
+    // 26.32 适配：ActorGriefingBlockEvent 的原版否决派发已移除，Catalyst 的 Before 事件继续提供取消能力。
 
     // 创建物品并添加到生物背包
-    ItemStack item(block, 1, nullptr);
+    // 26.32 适配：ItemStack(Block,int,CompoundTag*) 构造已移至 ItemStackBase，改用默认构造 + reinit
+    ItemStack item;
+    item.reinit(block, 1);
     mMob.add(item);
 
     // 移除方块
@@ -133,7 +119,7 @@ LL_TYPE_INSTANCE_HOOK(TakeBlockGoalTickHook, HookPriority::Normal, TakeBlockGoal
     VariantParameterList params;
     params.mSelf  = &mMob;
     params.mBlock = &targetPos;
-    auto& trigger = def.mOnTake.get();
+    auto& trigger = mOnTake.get();
     ActorDefinitionDescriptor::executeTrigger(mMob, trigger, params);
 
     // 发布 AfterEvent

@@ -1,67 +1,49 @@
 #include "NetherPortalCreateEvent.h"
 
-#include <array>
 #include <cmath>
-#include <functional>
-#include <limits>
+#include <optional>
 #include <utility>
+#include <vector>
 
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
+#include "mc/deps/core/math/Vec3.h"
+#include "mc/deps/core/string/HashedString.h"
+#include "mc/util/BlockChange.h"
+#include "mc/util/WorldChangeTransaction.h"
 #include "mc/world/actor/Actor.h"
-#include "mc/world/level/BlockSource.h"
-#include "mc/world/level/Level.h"
-#include "mc/world/level/PortalForcer.h"
+#include "mc/world/actor/player/Player.h"
+#include "mc/world/level/ActorDimensionTransferer.h"
+#include "mc/world/level/ChangeDimensionRequest.h"
+#include "mc/world/level/PlayerDimensionTransferManager.h"
+#include "mc/world/level/PlayerDimensionTransferer.h"
 #include "mc/world/level/PortalShape.h"
-#include "mc/world/level/block/BedrockBlockNames.h"
 #include "mc/world/level/block/Block.h"
-#include "mc/world/level/block/BlockChangeContext.h"
 #include "mc/world/level/block/PortalAxis.h"
 #include "mc/world/level/block/VanillaBlockTypeIds.h"
-#include "mc/world/level/block/VanillaStates.h"
-#include "mc/world/level/block/registry/BlockTypeRegistry.h"
-#include "mc/world/level/material/Material.h"
-#include "mc/world/level/storage/LevelData.h"
-#include "mc/util/BaseGameVersion.h"
-
-
-namespace std {
-
-template <>
-struct hash<::PortalRecord> {
-    size_t operator()(::PortalRecord const& record) const noexcept {
-        size_t hashValue = 1469598103934665603ull;
-        auto   mix       = [&](unsigned int v) {
-            hashValue ^= static_cast<size_t>(v);
-            hashValue *= 1099511628211ull;
-        };
-
-        auto const& base = record.mBaseBlockPos.get();
-        mix(static_cast<unsigned int>(base.x));
-        mix(static_cast<unsigned int>(base.y));
-        mix(static_cast<unsigned int>(base.z));
-        mix(static_cast<unsigned char>(record.mSpan));
-        mix(static_cast<unsigned char>(record.mXInc));
-        mix(static_cast<unsigned char>(record.mZInc));
-        return hashValue;
-    }
-};
-
-template <>
-struct equal_to<::PortalRecord> {
-    bool operator()(::PortalRecord const& lhs, ::PortalRecord const& rhs) const noexcept {
-        auto const& l = lhs.mBaseBlockPos.get();
-        auto const& r = rhs.mBaseBlockPos.get();
-        return l.x == r.x && l.y == r.y && l.z == r.z && lhs.mSpan == rhs.mSpan && lhs.mXInc == rhs.mXInc
-            && lhs.mZInc == rhs.mZInc;
-    }
-};
-
-} // namespace std
+#include "mc/world/level/dimension/DimensionType.h"
 
 #include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
+
+// 26.32 适配说明：
+//
+// BDS 26.32 移除了 PortalForcer::createPortal / force / _findPortal 的独立符号（逻辑被内联进
+// 维度传送流程），传送门方块的生成收敛到 PortalShape::createPortalBlocks(WorldChangeTransaction&)。
+// 因此本事件改为：
+//   1. hook ActorDimensionTransferer::findTargetPositionAndSetPosition（含内联 force 的实体传送路径）
+//      与 PlayerDimensionTransferer::setTransitionLocation / _playerChangeDimension（玩家传送路径），
+//      用线程局部上下文记录“当前正在传送的 Actor”；
+//   2. hook PortalShape::createPortalBlocks：上下文存在时发布 Before/After 事件；
+//      上下文不存在（例如打火石点燃黑曜石框架等非传送触发的生成）则原样放行。
+//
+// 与旧版（hook createPortal 整体替换）的行为差异：
+//   - 取消 Before 事件后不再调用原函数，传送门方块不会生成；但内联的传送逻辑仍会按
+//     未放置的形状计算落点（无法在不反编译的前提下干预内联代码）。
+//   - radius 无法从内联代码中取得，按原版搜索半径常量 16 上报。
+//   - forcedPlacement 为尽力而为的推断：若事务在进入时已包含预置方块（强制放置路径的平台
+//     准备），则判定为强制放置。
 
 namespace Catalyst {
 
@@ -90,14 +72,42 @@ void NetherPortalCreateAfterEvent::serialize(CompoundTag& nbt) const {
     nbt["zInc"]            = zInc();
 }
 
+namespace {
 
-static BlockPos getPortalInnerPosFromRecord(::PortalRecord const& record) {
-    auto pos = record.mBaseBlockPos.get();
-    pos.x += static_cast<int>(record.mXInc);
-    pos.z += static_cast<int>(record.mZInc);
-    pos.y += 1;
-    return pos;
+// 原版在目标维度搜索既有传送门的半径（内联代码中的常量，此处仅用于事件上报）。
+constexpr int kVanillaPortalSearchRadius = 16;
+
+// ---- 线程局部上下文：正在通过传送门传送的实体 ----
+
+struct PortalCreationContext {
+    Actor* actor     = nullptr;
+    Vec3   centerPos{};
+};
+
+PortalCreationContext& portalCreationContext() {
+    static thread_local PortalCreationContext context;
+    return context;
 }
+
+// RAII：进入传送路径时记录实体，退出（含嵌套）时恢复外层上下文。
+class PortalCreationContextScope {
+public:
+    PortalCreationContextScope(Actor& actor, Vec3 const& centerPos) : mPrevious(portalCreationContext()) {
+        auto& context   = portalCreationContext();
+        context.actor   = &actor;
+        context.centerPos = centerPos;
+    }
+
+    ~PortalCreationContextScope() { portalCreationContext() = mPrevious; }
+
+    PortalCreationContextScope(PortalCreationContextScope const&)            = delete;
+    PortalCreationContextScope& operator=(PortalCreationContextScope const&) = delete;
+
+private:
+    PortalCreationContext mPrevious;
+};
+
+// ---- 几何辅助 ----
 
 static BlockPos floorBlockPosFromVec3(::Vec3 const& pos) {
     return BlockPos{
@@ -107,342 +117,70 @@ static BlockPos floorBlockPosFromVec3(::Vec3 const& pos) {
     };
 }
 
-struct PortalCandidate {
-    BlockPos pos{};
-    int      stepX    = 1;
-    int      stepZ    = 0;
-    float    distSqr  = std::numeric_limits<float>::max();
-    bool     selected = false;
-};
-
-static float distanceSqrToEntity(::Vec3 const& entityPos, ::BlockPos const& pos) {
-    float dx = (static_cast<float>(pos.x) + 0.5f) - entityPos.x;
-    float dy = (static_cast<float>(pos.y) + 0.5f) - entityPos.y;
-    float dz = (static_cast<float>(pos.z) + 0.5f) - entityPos.z;
-    return dx * dx + dy * dy + dz * dz;
-}
-
-static int floorMod(int value, int modulus) {
-    int r = value % modulus;
-    return r < 0 ? r + modulus : r;
-}
-
-static bool canPortalReplaceBlock(::BlockSource& source, ::BlockPos const& pos) {
-    auto const& minVersion = ::PortalForcer::MIN_PORTAL_REPLACE_BLOCK_FIX_VERSION();
-    auto const& worldVersion = source.getLevel().getLevelData().getBaseGameVersion();
-    if (!minVersion.isCompatibleWith(worldVersion)) {
-        return source.isEmptyBlock(pos);
-    }
-
-    auto const& block = source.getBlock(pos);
-    if (block.getMaterial().isSolid()) {
-        return false;
-    }
-
-    auto const& extraBlock = source.getExtraBlock(pos);
-    return !extraBlock.getMaterial().isSolid() && block.canBeBuiltOver(source, pos);
-}
-
-static int settleCandidateY(::BlockSource& source, int x, int y, int z, int minY) {
-    if (!canPortalReplaceBlock(source, BlockPos{x, y, z})) {
-        return std::numeric_limits<int>::min();
-    }
-
-    while (y > minY && canPortalReplaceBlock(source, BlockPos{x, y - 1, z})) {
-        --y;
-    }
-    return y;
-}
-
-static void getStepFromOrientation4(int orientationId, int& stepX, int& stepZ) {
-    int k2 = orientationId % 2;
-    int l2 = 1 - k2;
-    if (orientationId >= 2) {
-        k2 = -k2;
-        l2 = -l2;
-    }
-    stepX = k2;
-    stepZ = l2;
-}
-
-static void normalizeStepAndOrigin(::BlockPos& innerBottomLeft, int& stepX, int& stepZ) {
-    if (stepX < 0) {
-        innerBottomLeft.x += stepX;
-        stepX = -stepX;
-    }
-    if (stepZ < 0) {
-        innerBottomLeft.z += stepZ;
-        stepZ = -stepZ;
+static void axisSteps(::PortalAxis axis, int& stepX, int& stepZ) {
+    switch (axis) {
+    case ::PortalAxis::X:
+        stepX = 1;
+        stepZ = 0;
+        break;
+    case ::PortalAxis::Z:
+        stepX = 0;
+        stepZ = 1;
+        break;
+    default:
+        stepX = 0;
+        stepZ = 0;
+        break;
     }
 }
 
-static bool hasSolidMaterial(::BlockSource const& source, int x, int y, int z) {
-    return source.getMaterial(x, y, z).mSolid;
+static BlockPos getPortalInnerPosFromRecord(::PortalRecord const& record) {
+    auto pos = record.mBaseBlockPos.get();
+    pos.x += static_cast<int>(record.mXInc);
+    pos.z += static_cast<int>(record.mZInc);
+    pos.y += 1;
+    return pos;
 }
 
-static bool validatePortalVolumeFirstPass(
-    ::BlockSource& source,
-    int            candidateX,
-    int            candidateY,
-    int            candidateZ,
-    int            orientationId
-) {
-    int stepX = 0;
-    int stepZ = 0;
-    getStepFromOrientation4(orientationId, stepX, stepZ);
+static uint64 getBlockNameHash(::Block const& block) {
+    return block.mBlockType->mNameInfo.get().mFullName.get().mStrHash;
+}
 
-    int depthX = stepZ;
-    int depthZ = -stepX;
+static bool isPortalBlock(::Block const* block) {
+    return block != nullptr && getBlockNameHash(*block) == ::VanillaBlockTypeIds::Portal().mStrHash;
+}
 
-    for (int depth = 0; depth < 3; ++depth) {
-        for (int width = 0; width < 4; ++width) {
-            int blockX = candidateX + (width - 1) * stepX + depth * depthX;
-            int blockZ = candidateZ + (width - 1) * stepZ + depth * depthZ;
+static bool transactionHasPreparedChanges(::WorldChangeTransaction const& transaction) {
+    auto const* data = transaction.mData.get();
+    return data != nullptr && !data->changes.get().empty();
+}
 
-            for (int h = -1; h < 4; ++h) {
-                int blockY = candidateY + h;
-                if (h < 0) {
-                    if (!hasSolidMaterial(source, blockX, blockY, blockZ)) {
-                        return false;
-                    }
-                } else if (!canPortalReplaceBlock(source, BlockPos{blockX, blockY, blockZ})) {
-                    return false;
-                }
-            }
+static std::vector<BlockPos> collectPortalBlocksFromTransaction(::WorldChangeTransaction const& transaction) {
+    std::vector<BlockPos> blocks;
+    auto const*           data = transaction.mData.get();
+    if (data == nullptr) {
+        return blocks;
+    }
+    for (auto const& [pos, change] : data->changes.get()) {
+        if (isPortalBlock(change.mNewBlock)) {
+            blocks.emplace_back(pos);
         }
     }
-    return true;
+    return blocks;
 }
 
-static bool validatePortalVolumeSecondPass(
-    ::BlockSource& source,
-    int            candidateX,
-    int            candidateY,
-    int            candidateZ,
-    int            orientationId
-) {
-    int stepX = orientationId;
-    int stepZ = 1 - orientationId;
-
-    for (int width = 0; width < 4; ++width) {
-        int blockX = candidateX + (width - 1) * stepX;
-        int blockZ = candidateZ + (width - 1) * stepZ;
-        for (int h = -1; h < 4; ++h) {
-            int blockY = candidateY + h;
-            if (h < 0) {
-                if (!hasSolidMaterial(source, blockX, blockY, blockZ)) {
-                    return false;
-                }
-            } else if (!canPortalReplaceBlock(source, BlockPos{blockX, blockY, blockZ})) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-static PortalCandidate findPortalCandidate(::BlockSource& source, ::BlockPos const& center, ::Vec3 const& entityPos, int seed) {
-    PortalCandidate best;
-    int minY = source.getMinHeight();
-    int maxY = source.getMaxHeight() - 1;
-    if (minY > maxY) {
-        return best;
-    }
-
-    constexpr int kSearchRadius = 16;
-
-    // Phase 1: strict scan with all 4 orientation variants.
-    for (int x = center.x - kSearchRadius; x <= center.x + kSearchRadius; ++x) {
-        for (int z = center.z - kSearchRadius; z <= center.z + kSearchRadius; ++z) {
-            for (int y = maxY; y >= minY; --y) {
-                int settledY = settleCandidateY(source, x, y, z, minY);
-                if (settledY == std::numeric_limits<int>::min()) {
-                    continue;
-                }
-
-                for (int i = 0; i < 4; ++i) {
-                    int orientationId = floorMod(seed + i, 4);
-                    if (!validatePortalVolumeFirstPass(source, x, settledY, z, orientationId)) {
-                        continue;
-                    }
-
-                    int stepX = 0;
-                    int stepZ = 0;
-                    getStepFromOrientation4(orientationId, stepX, stepZ);
-                    BlockPos candidate{x, settledY, z};
-                    float    d2 = distanceSqrToEntity(entityPos, candidate);
-                    if (d2 < best.distSqr) {
-                        best.pos      = candidate;
-                        best.stepX    = stepX;
-                        best.stepZ    = stepZ;
-                        best.distSqr  = d2;
-                        best.selected = true;
-                    }
-                }
-            }
-        }
-    }
-
-    if (best.selected) {
-        normalizeStepAndOrigin(best.pos, best.stepX, best.stepZ);
-        return best;
-    }
-
-    // Phase 2: relaxed scan with 2 orientation variants.
-    for (int x = center.x - kSearchRadius; x <= center.x + kSearchRadius; ++x) {
-        for (int z = center.z - kSearchRadius; z <= center.z + kSearchRadius; ++z) {
-            for (int y = maxY; y >= minY; --y) {
-                int settledY = settleCandidateY(source, x, y, z, minY);
-                if (settledY == std::numeric_limits<int>::min()) {
-                    continue;
-                }
-
-                for (int i = 0; i < 2; ++i) {
-                    int orientationId = floorMod(seed + i, 2);
-                    if (!validatePortalVolumeSecondPass(source, x, settledY, z, orientationId)) {
-                        continue;
-                    }
-
-                    BlockPos candidate{x, settledY, z};
-                    float    d2 = distanceSqrToEntity(entityPos, candidate);
-                    if (d2 < best.distSqr) {
-                        best.pos      = candidate;
-                        best.stepX    = orientationId;
-                        best.stepZ    = 1 - orientationId;
-                        best.distSqr  = d2;
-                        best.selected = true;
-                    }
-                }
-            }
-        }
-    }
-
-    if (best.selected) {
-        normalizeStepAndOrigin(best.pos, best.stepX, best.stepZ);
-    }
-    return best;
-}
-
-static ::PortalAxis axisFromStep(int stepX, int stepZ) {
-    if (stepX != 0) {
-        return ::PortalAxis::X;
-    }
-    if (stepZ != 0) {
-        return ::PortalAxis::Z;
-    }
-    return ::PortalAxis::Unknown;
-}
-
-static void placeFallbackSupport(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
-    auto const& netherrack =
-        ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Netherrack(), true);
-    int depthX = stepZ;
-    int depthZ = -stepX;
-
-    // Cross-shaped pattern: depth ±2 for inner columns (width 0,1),
-    // depth ±1 for frame columns (width -1,2). Matches vanilla exactly.
-    for (int depth = -2; depth <= 2; ++depth) {
-        for (int width = -1; width <= 2; ++width) {
-            if (std::abs(depth) == 2 && (width == -1 || width == 2)) {
-                continue;
-            }
-            BlockPos p = innerBottomLeft;
-            p.x += stepX * width + depthX * depth;
-            p.z += stepZ * width + depthZ * depth;
-            p.y -= 1;
-            if (source.getBlock(p).isAir()) {
-                source.setBlock(p, netherrack, 3, nullptr, ::BlockChangeContext{});
-            }
-        }
-    }
-}
-
-static void prepareForcedPlacementVolume(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
-    auto const& obsidian = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Obsidian(), true);
-    auto const& air      = ::BlockTypeRegistry::get().getDefaultBlockState(::BedrockBlockNames::Air(), false);
-    int         depthX   = stepZ;
-    int         depthZ   = -stepX;
-
-    for (int depth = -1; depth <= 1; ++depth) {
-        for (int w = 0; w < 2; ++w) {
-            BlockPos p = innerBottomLeft;
-            p.x += stepX * w + depthX * depth;
-            p.z += stepZ * w + depthZ * depth;
-
-            BlockPos floor = p;
-            floor.y -= 1;
-            source.setBlock(floor, obsidian, 3, nullptr, ::BlockChangeContext{});
-
-            for (int h = 0; h < 3; ++h) {
-                BlockPos interior = p;
-                interior.y += h;
-                source.setBlock(interior, air, 3, nullptr, ::BlockChangeContext{});
-            }
-        }
-    }
-}
-
-static void placePortalBlocks(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
-    auto const& obsidian = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Obsidian(), true);
-    auto const& portal   = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Portal(), true);
-
-    auto axis = axisFromStep(stepX, stepZ);
-    auto portalWithAxis = portal.setState(::VanillaStates::PortalAxis(), static_cast<int>(axis));
-    auto const& portalState = portalWithAxis ? portalWithAxis.get() : portal;
-
-    for (int w = -1; w <= 2; ++w) {
-        for (int h = -1; h <= 3; ++h) {
-            BlockPos p = innerBottomLeft;
-            p.x += stepX * w;
-            p.z += stepZ * w;
-            p.y += h;
-
-            bool frame = (w == -1 || w == 2 || h == -1 || h == 3);
-            source.setBlock(
-                p,
-                frame ? obsidian : portalState,
-                2,
-                nullptr,
-                ::BlockChangeContext{}
-            );
-        }
-    }
-
-    for (int w = -1; w <= 2; ++w) {
-        for (int h = -1; h <= 3; ++h) {
-            BlockPos p = innerBottomLeft;
-            p.x += stepX * w;
-            p.z += stepZ * w;
-            p.y += h;
-            source.updateNeighborsAt(p);
-        }
-    }
-}
-
-static int chooseFallbackY(::BlockSource const& source, int centerY) {
-    int y = source.getMaxHeight() - 10;
-    if (centerY <= y) {
-        y = centerY > 70 ? centerY : 70;
-    }
-    return y;
-}
-
-static ::PortalRecord buildRecordFromShapeAndPlacement(
-    ::PortalShape const& shape,
-    ::BlockPos const&    placedInnerBottomLeft,
-    int                  stepX,
-    int                  stepZ
-) {
-    ::PortalRecord record{};
-    auto           axis = shape.mAxis;
+// 与原版 PortalRecord 编码一致：X 轴传送门 span=1/xInc=1，Z 轴 span=2/zInc=1，
+// mBaseBlockPos 指向传送门内格左下角外侧的框架角块。
+static ::PortalRecord buildRecordFromShape(::PortalShape const& shape) {
+    auto axis = static_cast<::PortalAxis>(shape.mAxis);
     if (axis != ::PortalAxis::X && axis != ::PortalAxis::Z) {
-        axis = axisFromStep(stepX, stepZ);
+        axis = ::PortalAxis::X;
     }
     int span = axis == ::PortalAxis::X ? 1 : 2;
     int xInc = axis == ::PortalAxis::X ? 1 : 0;
     int zInc = axis == ::PortalAxis::Z ? 1 : 0;
 
-    auto innerBottomLeft = shape.mBottomLeftValid ? shape.mBottomLeft.get() : placedInnerBottomLeft;
+    auto innerBottomLeft = shape.mBottomLeft.get();
     auto base            = innerBottomLeft;
     base.x -= xInc;
     base.z -= zInc;
@@ -451,26 +189,12 @@ static ::PortalRecord buildRecordFromShapeAndPlacement(
     }
     base.y -= 1;
 
+    ::PortalRecord record{};
     record.mBaseBlockPos = base;
     record.mSpan         = static_cast<schar>(span);
     record.mXInc         = static_cast<schar>(xInc);
     record.mZInc         = static_cast<schar>(zInc);
     return record;
-}
-
-static std::vector<BlockPos> buildFallbackPortalBlocks(::BlockPos const& origin, int stepX, int stepZ) {
-    std::vector<BlockPos> blocks;
-    blocks.reserve(6);
-    for (int w = 0; w < 2; ++w) {
-        for (int h = 0; h < 3; ++h) {
-            BlockPos p = origin;
-            p.x += stepX * w;
-            p.z += stepZ * w;
-            p.y += h;
-            blocks.emplace_back(p);
-        }
-    }
-    return blocks;
 }
 
 static std::vector<BlockPos> buildPortalBlocksFromShapeAndRecord(
@@ -486,7 +210,7 @@ static std::vector<BlockPos> buildPortalBlocksFromShapeAndRecord(
         auto bottomLeft = shape.mBottomLeft.get();
 
         if (stepX == 0 && stepZ == 0) {
-            // Fallback: still provide stable coordinates even if direction cannot be inferred.
+            // 无法推断方向时仍提供稳定坐标。
             stepX = 1;
         }
 
@@ -506,7 +230,7 @@ static std::vector<BlockPos> buildPortalBlocksFromShapeAndRecord(
         return blocks;
     }
 
-    // Vanilla-created nether portals are 2x3 interior; fallback to record-derived inner origin.
+    // 原版下界传送门内格为 2x3，退化为按记录推导的内格原点。
     BlockPos origin = getPortalInnerPosFromRecord(record);
     if (stepX == 0 && stepZ == 0) {
         stepX = 1;
@@ -524,98 +248,129 @@ static std::vector<BlockPos> buildPortalBlocksFromShapeAndRecord(
     return blocks;
 }
 
+} // namespace
+
+// ---- 事件核心 hook：传送门方块生成 ----
+
 LL_TYPE_INSTANCE_HOOK(
     NetherPortalCreateEventHook,
     ll::memory::HookPriority::Normal,
-    ::PortalForcer,
-    &::PortalForcer::createPortal,
-    ::PortalRecord const&,
-    ::Actor const& entity,
-    int            radius
+    ::PortalShape,
+    &::PortalShape::createPortalBlocks,
+    void,
+    ::WorldChangeTransaction& transaction
 ) {
-    auto&       source    = entity.getDimensionBlockSource();
-    auto const& entityPos = entity.getPosition();
-    BlockPos    centerPos = floorBlockPosFromVec3(entityPos);
-
-    int seed = this->mRandom->nextInt();
-
-    auto candidate = findPortalCandidate(source, centerPos, entityPos, seed);
-
-    bool forcedPlacement = !candidate.selected;
-    if (!candidate.selected) {
-        int y              = chooseFallbackY(source, centerPos.y);
-        candidate.pos      = BlockPos{centerPos.x, y, centerPos.z};
-        candidate.stepX    = 0;
-        candidate.stepZ    = 1;
-        candidate.selected = true;
+    auto& context = portalCreationContext();
+    if (context.actor == nullptr) {
+        // 非维度传送触发生成（如打火石点燃框架），与本事件无关，直接放行。
+        origin(transaction);
+        return;
     }
+    Actor& actor = *context.actor;
+
+    BlockPos centerPos = floorBlockPosFromVec3(context.centerPos);
+    BlockPos plannedPos = this->mBottomLeft.get();
+    int      stepX      = 0;
+    int      stepZ      = 0;
+    axisSteps(static_cast<::PortalAxis>(this->mAxis), stepX, stepZ);
+    bool forcedPlacement = transactionHasPreparedChanges(transaction);
 
     auto& bus = ll::event::EventBus::getInstance();
     NetherPortalCreateBeforeEvent beforeEvent(
-        const_cast<Actor&>(entity),
+        actor,
         centerPos,
-        candidate.pos,
-        candidate.stepX,
-        candidate.stepZ,
+        plannedPos,
+        stepX,
+        stepZ,
         forcedPlacement,
-        radius
+        kVanillaPortalSearchRadius
     );
     bus.publish(beforeEvent);
     if (beforeEvent.isCancelled()) {
-        static const PortalRecord emptyRecord{};
-        return emptyRecord;
+        // 取消：不生成传送门方块（传送落点仍由内联的原版逻辑决定）。
+        return;
     }
 
-    if (forcedPlacement) {
-        prepareForcedPlacementVolume(source, candidate.pos, candidate.stepX, candidate.stepZ);
-        placeFallbackSupport(source, candidate.pos, candidate.stepX, candidate.stepZ);
-    }
-    placePortalBlocks(source, candidate.pos, candidate.stepX, candidate.stepZ);
+    origin(transaction);
 
-    auto        axis = axisFromStep(candidate.stepX, candidate.stepZ);
-    PortalShape shape{source, candidate.pos, axis};
-    shape.mAxis = axis;
-    shape.evaluate(candidate.pos, source);
-
-    auto dimensionId = source.getDimensionId();
-    auto builtRecord = buildRecordFromShapeAndPlacement(shape, candidate.pos, candidate.stepX, candidate.stepZ);
-    auto& recordSet  = this->mPortalRecords.get()[dimensionId];
-    auto  insertRet  = recordSet.emplace(builtRecord);
-    auto  iter       = insertRet.first;
-    this->mDirty     = true;
-    auto const& record = *iter;
-
-    BlockPos portalPos = getPortalInnerPosFromRecord(record);
-
-    auto portalBlocks = buildPortalBlocksFromShapeAndRecord(shape, record);
+    auto        record    = buildRecordFromShape(*this);
+    BlockPos    portalPos = getPortalInnerPosFromRecord(record);
+    auto        portalBlocks = collectPortalBlocksFromTransaction(transaction);
     if (portalBlocks.empty()) {
-        portalBlocks = buildFallbackPortalBlocks(portalPos, candidate.stepX, candidate.stepZ);
+        portalBlocks = buildPortalBlocksFromShapeAndRecord(*this, record);
     }
-    auto bottomLeft   = shape.mBottomLeftValid ? shape.mBottomLeft.get() : record.mBaseBlockPos.get();
-    int  width        = shape.mBottomLeftValid ? shape.mWidth : 2;
-    int  height       = shape.mBottomLeftValid ? shape.mHeight : 3;
 
     NetherPortalCreateAfterEvent afterEvent(
-        const_cast<Actor&>(entity),
+        actor,
         centerPos,
         portalPos,
         record,
-        bottomLeft,
-        width,
-        height,
-        shape.mBottomLeftValid,
+        this->mBottomLeft.get(),
+        this->mWidth,
+        this->mHeight,
+        this->mBottomLeftValid,
         std::move(portalBlocks),
-        radius
+        kVanillaPortalSearchRadius
     );
     bus.publish(afterEvent);
+}
 
-    return record;
+// ---- 实体传送路径上下文 hook（含内联的 PortalForcer::force 逻辑）----
+
+LL_TYPE_INSTANCE_HOOK(
+    NetherPortalActorTransferContextHook,
+    ll::memory::HookPriority::Normal,
+    ::ActorDimensionTransferer,
+    &::ActorDimensionTransferer::$findTargetPositionAndSetPosition,
+    ::Vec3,
+    ::Actor&                       actor,
+    ::DimensionType                toId,
+    ::DimensionType                fromId,
+    ::IDimension const&            toDimension,
+    ::PortalForcer const&          portalForcer,
+    std::optional<::Vec3> const&   actorPosition
+) {
+    ::Vec3 center = actorPosition.value_or(actor.getPosition());
+    PortalCreationContextScope scope(actor, center);
+    return origin(actor, toId, fromId, toDimension, portalForcer, actorPosition);
+}
+
+// ---- 玩家传送路径上下文 hook ----
+
+LL_TYPE_INSTANCE_HOOK(
+    NetherPortalPlayerTransferContextHook,
+    ll::memory::HookPriority::Normal,
+    ::PlayerDimensionTransferer,
+    &::PlayerDimensionTransferer::$setTransitionLocation,
+    void,
+    ::Player&                 player,
+    ::ChangeDimensionRequest& changeRequest,
+    ::Dimension&              toDimension
+) {
+    PortalCreationContextScope scope(player, changeRequest.mToLocation.get());
+    origin(player, changeRequest, toDimension);
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    NetherPortalPlayerRequestContextHook,
+    ll::memory::HookPriority::Normal,
+    ::PlayerDimensionTransferManager,
+    &::PlayerDimensionTransferManager::_playerChangeDimension,
+    bool,
+    ::Player&                 player,
+    ::ChangeDimensionRequest& changeRequest
+) {
+    PortalCreationContextScope scope(player, changeRequest.mToLocation.get());
+    return origin(player, changeRequest);
 }
 
 CATALYST_HOOKED_EVENT_PAIR(
     NetherPortalCreateBeforeEvent,
     NetherPortalCreateAfterEvent,
-    NetherPortalCreateEventHook
+    NetherPortalCreateEventHook,
+    NetherPortalActorTransferContextHook,
+    NetherPortalPlayerTransferContextHook,
+    NetherPortalPlayerRequestContextHook
 )
 
 } // namespace Catalyst

@@ -15,47 +15,58 @@ void SculkBlockGrowthEvent::serialize(CompoundTag& nbt) const {
 }
 
 
-LL_STATIC_HOOK(
+// 26.32 适配：SculkBlockBehavior::_placeGrowthAt（静态）已被内联进虚函数
+// attemptUseCharge（幽匿电荷消耗并放置生长的入口）。改为拦截 attemptUseCharge：
+// - region 为空的生成路径直接放行（与旧实现一致，不发事件）；
+// - 取消 Before = 本次不放置生长、不消耗电荷（返回 0）；
+// - origin 返回值 > 0 视为生长确实发生，此时发布 After。
+LL_TYPE_INSTANCE_HOOK(
     SculkBlockGrowthHook,
     ll::memory::HookPriority::Normal,
-    &SculkBlockBehavior::_placeGrowthAt,
-    void,
+    SculkBlockBehavior,
+    &SculkBlockBehavior::$attemptUseCharge,
+    int,
     ::IBlockWorldGenAPI& target,
     ::BlockSource*       region,
+    ::BlockPos const&    originPos,
     ::BlockPos const&    pos,
+    int                  charge,
+    int                  unusedArg,
     ::Random&            random,
-    ::SculkSpreader&     spreader
+    ::SculkSpreader&     spreader,
+    bool const           flag
 ) {
-    auto& bus = ll::event::EventBus::getInstance();
-    WeakRef<BlockSource> regionWeak;
-
     if (region == nullptr) {
         // Some worldgen paths provide a null BlockSource pointer.
         // Preserve game behavior, but skip publishing events that require BlockSource&.
-        origin(target, region, pos, random, spreader);
-        return;
+        return origin(target, region, originPos, pos, charge, unusedArg, random, spreader, flag);
     }
 
-    regionWeak = region->getWeakRef();
+    auto& bus = ll::event::EventBus::getInstance();
+
+    WeakRef<BlockSource> regionWeak = region->getWeakRef();
 
     SculkBlockGrowthBeforeEvent beforeEvent(*region, pos);
     bus.publish(beforeEvent);
 
     if (beforeEvent.isCancelled()) {
-        return;
+        return 0;
     }
 
-    origin(target, region, pos, random, spreader);
+    int result = origin(target, region, originPos, pos, charge, unusedArg, random, spreader, flag);
 
-    auto lockedRegion = regionWeak.lock();
-    if (!lockedRegion) {
-        // _placeGrowthAt may invalidate the original BlockSource on some worldgen paths.
-        // Do not publish an AfterEvent with a dangling WorldEvent::blockSource().
-        return;
+    if (result > 0) {
+        auto lockedRegion = regionWeak.lock();
+        if (!lockedRegion) {
+            // attemptUseCharge may invalidate the original BlockSource on some worldgen paths.
+            // Do not publish an AfterEvent with a dangling WorldEvent::blockSource().
+            return result;
+        }
+        SculkBlockGrowthAfterEvent afterEvent(*lockedRegion, pos);
+        bus.publish(afterEvent);
     }
 
-    SculkBlockGrowthAfterEvent afterEvent(*lockedRegion, pos);
-    bus.publish(afterEvent);
+    return result;
 }
 
 CATALYST_HOOKED_EVENT_PAIR(

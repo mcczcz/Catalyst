@@ -6,6 +6,7 @@
 #include "catalyst/test/EventTest.h"
 
 namespace Catalyst {
+
 ll::io::Logger& logger = Entry::getInstance().getSelf().getLogger();
 Config&         config = ConfigManager::getInstance().get();
 

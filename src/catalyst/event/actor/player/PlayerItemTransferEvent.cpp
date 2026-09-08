@@ -34,23 +34,22 @@ void PlayerItemTransferEvent::serialize(CompoundTag& nbt) const {
 }
 
 
+// 26.32 适配：ItemStackRequestActionHandler::handleRequestAction（动作分发入口）已被
+// 内联进请求处理循环。Take/Place/Swap 三类转移动作在原版中均经由 _handleTransfer
+// 处理，故改为直接钩住 _handleTransfer，其参数即转移动作本体。
 LL_TYPE_INSTANCE_HOOK(
     PlayerItemTransferEventHook,
     HookPriority::Normal,
     ItemStackRequestActionHandler,
-    &ItemStackRequestActionHandler::handleRequestAction,
+    &ItemStackRequestActionHandler::_handleTransfer,
     ItemStackNetResult,
-    ItemStackRequestAction const& requestAction
+    ItemStackRequestActionTransferBase const& requestAction,
+    bool const                                isSrcHintSlot,
+    bool const                                isDstHintSlot,
+    bool const                                isSwap
 ) {
-    auto actionType = requestAction.mActionType;
-
-    // 只处理物品转移相关的操作
-    if (actionType != ItemStackRequestActionType::Take && actionType != ItemStackRequestActionType::Place
-        && actionType != ItemStackRequestActionType::Swap) {
-        return origin(requestAction);
-    }
-
-    auto const& transferAction = static_cast<ItemStackRequestActionTransferBase const&>(requestAction);
+    auto const  actionType     = requestAction.mActionType;
+    auto const& transferAction = requestAction;
     auto&       player         = mPlayer;
 
     // 获取屏幕上下文
@@ -101,7 +100,7 @@ LL_TYPE_INSTANCE_HOOK(
         return ItemStackNetResult::Error;
     }
 
-    auto result = origin(requestAction);
+    auto result = origin(requestAction, isSrcHintSlot, isDstHintSlot, isSwap);
 
     if (result == ItemStackNetResult::Success) {
         PlayerItemTransferAfterEvent afterEvent(

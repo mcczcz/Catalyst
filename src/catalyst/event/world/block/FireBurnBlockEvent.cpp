@@ -81,14 +81,22 @@ static bool isBeehiveBlock(Block const& block) {
 }
 
 static void tryAddFireToTickingQueue(
-    FireBlock const& fireBlock,
+    FireBlock const& /*fireBlock*/,
     BlockSource&     region,
     BlockPos const&  pos,
     IRandom&         random
 ) {
-    if (!region.isInstaticking(pos) && !region.hasTickInPendingTicks(pos)) {
-        region.addToRandomTickingQueue(pos, fireBlock.getDefaultState(), random.nextInt(10) + 30, 0, false);
+    // 26.32 适配：hasTickInPendingTicks 需显式指定队列类型；FireBlock::getDefaultState
+    // 已被移除，改用 pos 处的当前方块（所有调用点都保证该位置是火焰方块）。
+    if (!region.isInstaticking(pos) && !region.hasTickInPendingTicks(pos, ::TickingQueueType::Random)) {
+        region.addToRandomTickingQueue(pos, region.getBlock(pos), random.nextInt(10) + 30, 0, false);
     }
+}
+
+// 26.32 适配：FireBlock::getFireOdds 已被内联进 tick，按原版语义重新实现：
+// 返回目标位置方块的 flame_odds 原始值（0~60），与难度加成（47/54/61）同量纲。
+static float getFireOdds(BlockSource& region, BlockPos const& pos) {
+    return static_cast<float>(region.getBlock(pos).mDirectData.get().mFlameOdds);
 }
 
 // checkBurn hook: 按照原版逻辑重写
@@ -429,7 +437,8 @@ LABEL_55:
     // ============ 火焰蔓延逻辑 ============
 
     auto const& biome  = region.getBiome(firePos);
-    bool        isHumid = biome.isHumid();
+    // 26.32 适配：Biome::isHumid 已移除，按原版语义以降水量（downfall > 0.85）判定潮湿
+    bool isHumid = biome.mDownfall > 0.85f;
 
     // 烧毁相邻方块的概率
     int horizontalChance = isHumid ? 250 : 300;

@@ -17,7 +17,7 @@
 #include "mc/deps/nbt/CompoundTagVariant.h"
 #include "mc/deps/raknet/DefaultMessageIDTypes.h"
 #include "mc/deps/raknet/RNS2_SendParameters.h"
-#include "mc/deps/raknet/RNS2_Windows_Linux_360.h"
+#include "mc/deps/raknet/RNS2_Windows.h"
 #include "mc/deps/raknet/SystemAddress.h"
 
 namespace {
@@ -261,13 +261,13 @@ std::uint16_t ServerPongAfterEvent::port() const { return extractPort(mIpAndPort
 
 #ifdef LL_PLAT_S
 
-LL_TYPE_STATIC_HOOK(
+// 26.32: Send_Windows_Linux_360NoVDP 被移除，改为 hook RNS2_Windows 虚函数 Send 的 $thunk
+LL_TYPE_INSTANCE_HOOK(
     ServerPongEventHook,
     ll::memory::HookPriority::Normal,
-    RakNet::RNS2_Windows_Linux_360,
-    &RakNet::RNS2_Windows_Linux_360::Send_Windows_Linux_360NoVDP,
+    RakNet::RNS2_Windows,
+    &RakNet::RNS2_Windows::$Send,
     int,
-    int                            rns2Socket,
     ::RakNet::RNS2_SendParameters* sendParameters,
     char const*                    file,
     uint                           line
@@ -278,19 +278,19 @@ LL_TYPE_STATIC_HOOK(
             || static_cast<unsigned char>(sendParameters->data[0])
                 != static_cast<unsigned char>(DefaultMessageIDTypes::UnconnectedPong)
         ) {
-            return origin(rns2Socket, sendParameters, file, line);
+            return origin(sendParameters, file, line);
         }
 
         auto const* data = reinterpret_cast<unsigned char const*>(sendParameters->data);
         auto payloadSize = static_cast<std::size_t>((static_cast<unsigned int>(data[33]) << 8) | data[34]);
         if (payloadSize != static_cast<std::size_t>(sendParameters->length) - kUnconnectedPongHeaderSize) {
-            return origin(rns2Socket, sendParameters, file, line);
+            return origin(sendParameters, file, line);
         }
 
         std::string_view payloadView{sendParameters->data + kUnconnectedPongHeaderSize, payloadSize};
         auto parsed = parsePongPayload(payloadView, systemAddressToString(sendParameters->systemAddress));
         if (!parsed.has_value()) {
-            return origin(rns2Socket, sendParameters, file, line);
+            return origin(sendParameters, file, line);
         }
 
         auto& bus = ll::event::EventBus::getInstance();
@@ -316,7 +316,7 @@ LL_TYPE_STATIC_HOOK(
 
         auto rebuiltPayload = buildPayload(beforeEvent);
         if (rebuiltPayload.size() > 0xFFFF) {
-            return origin(rns2Socket, sendParameters, file, line);
+            return origin(sendParameters, file, line);
         }
 
         std::string rebuiltPacket =
@@ -326,7 +326,7 @@ LL_TYPE_STATIC_HOOK(
         modifiedParams.data   = rebuiltPacket.data();
         modifiedParams.length = static_cast<int>(rebuiltPacket.size());
 
-        int result = origin(rns2Socket, &modifiedParams, file, line);
+        int result = origin(&modifiedParams, file, line);
 
         ServerPongAfterEvent afterEvent(
             beforeEvent.motd(),
@@ -346,7 +346,7 @@ LL_TYPE_STATIC_HOOK(
 
         return result;
     } catch (...) {
-        return origin(rns2Socket, sendParameters, file, line);
+        return origin(sendParameters, file, line);
     }
 }
 
