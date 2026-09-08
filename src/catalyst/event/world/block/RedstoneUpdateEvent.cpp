@@ -35,59 +35,49 @@ LL_TYPE_INSTANCE_HOOK(
         auto  chunkEntryIterator = componentsByChunk.find(chunkPos);
 
         if (chunkEntryIterator != componentsByChunk.end()) {
-            std::vector<ChunkCircuitComponentList::Item> secondaryUpdateQueue;
-            ChunkCircuitComponentList&                   chunkComponentList = chunkEntryIterator->second;
-            auto&                                        bus                = ll::event::EventBus::getInstance();
+            auto&                                      bus                = ll::event::EventBus::getInstance();
+            ChunkCircuitComponentList&                 chunkComponentList = chunkEntryIterator->second;
+            std::vector<std::pair<BlockPos, BaseCircuitComponent*>> updatedComponents;
 
+            // 26.32 起 CircuitSystem::updateIndividualBlock 已被内联进 updateBlocks，无法逐个调用。
+            // 改为：Before 阶段先遍历发布事件，被取消的元件直接清掉 mNeedsUpdate 标记，
+            // 让 origin 跳过它；未取消的记录下来，origin 执行完后再发布 After 事件。
             for (auto& listItem : *chunkComponentList.mComponents) {
                 BaseCircuitComponent* component = listItem.mComponent;
                 if (!component) continue;
 
                 if (component->mNeedsUpdate && !component->mRemoved) {
-                    component->mNeedsUpdate = false;
+                    int newStrength = component->getStrength();
+                    if (newStrength != -1) {
+                        RedstoneUpdateBeforeEvent
+                            beforeEvent(region, listItem.mPos, newStrength, component->mIsFirstTime, component);
+                        bus.publish(beforeEvent);
 
-                    if (component->isSecondaryPowered()) {
-                        secondaryUpdateQueue.push_back(listItem);
-                    } else {
-                        int newStrength = component->getStrength();
-                        if (newStrength != -1) {
-                            RedstoneUpdateBeforeEvent
-                                beforeEvent(region, listItem.mPos, newStrength, component->mIsFirstTime, component);
-                            bus.publish(beforeEvent);
-
-                            if (!beforeEvent.isCancelled()) {
-                                this->updateIndividualBlock(component, chunkPos, listItem.mPos, region);
-                                RedstoneUpdateAfterEvent
-                                    afterEvent(region, listItem.mPos, newStrength, component->mIsFirstTime, component);
-                                bus.publish(afterEvent);
-                            }
+                        if (beforeEvent.isCancelled()) {
+                            component->mNeedsUpdate = false;
+                            component->mIsFirstTime  = false;
+                        } else {
+                            updatedComponents.emplace_back(listItem.mPos, component);
                         }
-                        component->mIsFirstTime = false;
                     }
                 }
             }
 
-            for (auto& listItem : secondaryUpdateQueue) {
-                BaseCircuitComponent* component = listItem.mComponent;
-                if (!component) continue;
+            origin(region, chunkPos);
 
+            for (auto& [pos, component] : updatedComponents) {
                 int newStrength = component->getStrength();
                 if (newStrength != -1) {
-                    RedstoneUpdateBeforeEvent
-                        beforeEvent(region, listItem.mPos, newStrength, component->mIsFirstTime, component);
-                    bus.publish(beforeEvent);
-
-                    if (!beforeEvent.isCancelled()) {
-                        this->updateIndividualBlock(component, chunkPos, listItem.mPos, region);
-                        RedstoneUpdateAfterEvent
-                            afterEvent(region, listItem.mPos, newStrength, component->mIsFirstTime, component);
-                        bus.publish(afterEvent);
-                    }
+                    RedstoneUpdateAfterEvent
+                        afterEvent(region, pos, newStrength, component->mIsFirstTime, component);
+                    bus.publish(afterEvent);
                 }
-                component->mIsFirstTime = false;
             }
+            return;
         }
     }
+
+    origin(region, chunkPos);
 }
 
 CATALYST_HOOKED_EVENT_PAIR(

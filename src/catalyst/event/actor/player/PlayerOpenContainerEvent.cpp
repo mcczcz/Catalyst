@@ -126,4 +126,16 @@ static std::unique_ptr<ll::event::EmitterBase> afterEmitterFactory() {
     return std::make_unique<PlayerOpenContainerAfterEventEmitter>();
 }
 
+
+// 修复：LL inline 变量模板 emitterRegistration 被 /OPT:REF 丢弃，显式注册（见 EmitterRegistration.h 注释）
+namespace {
+struct ExplicitEmitterRegistration {
+    ExplicitEmitterRegistration() {
+        ll::event::EventBus::getInstance().setEventEmitter<PlayerOpenContainerBeforeEvent>(beforeEmitterFactory);
+        ll::event::EventBus::getInstance().setEventEmitter<PlayerOpenContainerAfterEvent>(afterEmitterFactory);
+    }
+};
+ExplicitEmitterRegistration const explicitEmitterRegistrationInstance;
+} // namespace
+
 } // namespace Catalyst

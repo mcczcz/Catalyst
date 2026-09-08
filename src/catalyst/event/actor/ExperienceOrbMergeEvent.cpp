@@ -36,30 +36,29 @@ int getOrbValue(ExperienceOrb& orb) {
     return orb.mEntityData->getInt(static_cast<ushort>(ActorDataIDs::Value));
 }
 
+// 26.32 适配：ExperienceOrb::_tryMergeExistingOrbs（逐 tick 合并）已从原版移除
+// （运行时仅保留出生时的静态 _tryMergeIntoExistingOrbs）。改为拦截 postNormalTick，
+// 在其内追加原合并逻辑（带事件）；若原版内部仍内联合并，本逻辑幂等、不会重复合并。
 LL_TYPE_INSTANCE_HOOK(
     ExperienceOrbMergeEventHook,
     ll::memory::HookPriority::Normal,
     ExperienceOrb,
-    &ExperienceOrb::_tryMergeExistingOrbs,
+    &ExperienceOrb::postNormalTick,
     void
 ) {
+    origin();
+
     auto& bus    = ll::event::EventBus::getInstance();
     auto& region = this->getDimensionBlockSource();
     auto  range  = this->getAABB().cloneAndGrow(Vec3{0.5f, 0.5f, 0.5f});
     int   selfValue = getOrbValue(*this);
     auto  selfId    = this->getOrCreateUniqueID();
 
-    auto xpOrbs = region.fetchEntities(
-        ActorType::Experience,
-        range,
-        this,
-        [](Actor*) {
-            return true;
-        }
-    );
+    // 26.32 适配：带类型的 fetchEntities 重载已移除，改用 fetchEntities2 并自行排除自身
+    auto const& xpOrbs = region.fetchEntities2(ActorType::Experience, range, false);
 
     for (Actor* actor : xpOrbs) {
-        if (!actor || actor->mRemoved) {
+        if (!actor || actor == static_cast<Actor*>(this) || actor->mRemoved) {
             continue;
         }
         if (this->mRemoved) {

@@ -26,6 +26,10 @@ void ActorEffectRemoveEvent::serialize(CompoundTag& nbt) const {
 }
 
 
+// 26.32 适配：Actor::onEffectUpdated 已从原版移除——重力刷新现有效果时
+// 不再有独立回调，更新路径被内联进 Actor::addEffect。改为在 addEffect 钩子内
+// 判定“该效果已存在”来派生 Update 事件（保持 26.20 的事件嵌套顺序：
+// AddBefore → UpdateBefore → 更新 → UpdateAfter → AddAfter）。
 LL_TYPE_INSTANCE_HOOK(
     ActorEffectAddEventHook,
     ll::memory::HookPriority::Normal,
@@ -36,37 +40,32 @@ LL_TYPE_INSTANCE_HOOK(
 ) {
     auto& bus = ll::event::EventBus::getInstance();
 
+    bool const isUpdate = this->getEffect(effect.mId) != nullptr;
+
     ActorEffectAddBeforeEvent beforeEvent(*this, effect);
     bus.publish(beforeEvent);
     if (beforeEvent.isCancelled()) {
         return;
     }
 
-    origin(effect);
+    if (isUpdate) {
+        MobEffectInstance& effectRef = const_cast<MobEffectInstance&>(effect);
 
-    ActorEffectAddAfterEvent afterEvent(*this, effect);
-    bus.publish(afterEvent);
-}
+        ActorEffectUpdateBeforeEvent updateBeforeEvent(*this, effectRef);
+        bus.publish(updateBeforeEvent);
+        if (updateBeforeEvent.isCancelled()) {
+            return;
+        }
 
-LL_TYPE_INSTANCE_HOOK(
-    ActorEffectUpdateEventHook,
-    ll::memory::HookPriority::Normal,
-    Actor,
-    &Actor::onEffectUpdated,
-    void,
-    MobEffectInstance& effect
-) {
-    auto& bus = ll::event::EventBus::getInstance();
+        origin(effect);
 
-    ActorEffectUpdateBeforeEvent beforeEvent(*this, effect);
-    bus.publish(beforeEvent);
-    if (beforeEvent.isCancelled()) {
-        return;
+        ActorEffectUpdateAfterEvent updateAfterEvent(*this, effectRef);
+        bus.publish(updateAfterEvent);
+    } else {
+        origin(effect);
     }
 
-    origin(effect);
-
-    ActorEffectUpdateAfterEvent afterEvent(*this, effect);
+    ActorEffectAddAfterEvent afterEvent(*this, effect);
     bus.publish(afterEvent);
 }
 
@@ -93,7 +92,7 @@ LL_TYPE_INSTANCE_HOOK(
 }
 
 CATALYST_HOOKED_EVENT_PAIR(ActorEffectAddBeforeEvent, ActorEffectAddAfterEvent, ActorEffectAddEventHook)
-CATALYST_HOOKED_EVENT_PAIR(ActorEffectUpdateBeforeEvent, ActorEffectUpdateAfterEvent, ActorEffectUpdateEventHook)
+CATALYST_HOOKED_EVENT_PAIR(ActorEffectUpdateBeforeEvent, ActorEffectUpdateAfterEvent, ActorEffectAddEventHook)
 CATALYST_HOOKED_EVENT_PAIR(ActorEffectRemoveBeforeEvent, ActorEffectRemoveAfterEvent, ActorEffectRemoveEventHook)
 
 } // namespace Catalyst

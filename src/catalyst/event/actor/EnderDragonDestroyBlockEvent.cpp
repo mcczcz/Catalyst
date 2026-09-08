@@ -13,13 +13,7 @@
 #include "mc/deps/core/math/Vec3.h"
 #include "mc/deps/core/string/HashedString.h"
 #include "mc/deps/shared_types/legacy/LevelEvent.h"
-#include "mc/gameplayhandlers/CoordinatorResult.h"
 #include "mc/util/Random.h"
-#include "mc/world/events/ActorEventCoordinator.h"
-#include "mc/world/events/ActorGameplayEvent.h"
-#include "mc/world/events/ActorGriefingBlockEvent.h"
-#include "mc/world/events/BlockSourceHandle.h"
-#include "mc/world/events/EventRef.h"
 #include "mc/world/level/BlockPos.h"
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
@@ -92,33 +86,6 @@ bool isDragonImmuneBlock(uint64 blockNameHash) {
     return isInBlockTypeGroup(blockNameHash, VanillaBlockTypeGroups::CopperBarsBlockIds());
 }
 
-class BlockSourceHandleGuard {
-    BlockSource&                     mBlockSource;
-    std::shared_ptr<BlockSourceHandle> mHandle;
-    bool                             mAttached;
-
-public:
-    explicit BlockSourceHandleGuard(BlockSource& blockSource)
-    : mBlockSource(blockSource),
-      mHandle(std::make_shared<BlockSourceHandle>()),
-      mAttached(false) {
-        mHandle->mSource = &mBlockSource;
-        mBlockSource.addListener(*mHandle);
-        mAttached = true;
-    }
-
-    ~BlockSourceHandleGuard() {
-        if (!mAttached) {
-            return;
-        }
-        mBlockSource.removeListener(*mHandle);
-        mHandle->mSource = nullptr;
-        mAttached        = false;
-    }
-
-    std::shared_ptr<BlockSourceHandle> const& get() const { return mHandle; }
-};
-
 } // namespace
 
 LL_TYPE_INSTANCE_HOOK(
@@ -180,31 +147,9 @@ LL_TYPE_INSTANCE_HOOK(
                         continue;
                     }
 
-                    {
-                        // 原版会传 BlockSourceHandle，且在事件处理期间作为 BlockSource 监听器存在。
-                        // 用 RAII 保证所有分支都能解除监听，避免悬挂监听器导致 _blockChanged 崩溃。
-                        BlockSourceHandleGuard blockSourceHandle(blockSource);
-
-                        ActorGriefingBlockEvent const griefingEvent{
-                            this->getEntityContext().getWeakRef(),
-                            &block,
-                            Vec3(static_cast<float>(pos.x), static_cast<float>(pos.y), static_cast<float>(pos.z)),
-                            blockSourceHandle.get()
-                        };
-
-                        auto& eventCoordinator = level.getActorEventCoordinator();
-                        EventRef<ActorGameplayEvent<CoordinatorResult>> const eventRef(griefingEvent);
-
-                        using SendEventFunc = CoordinatorResult (ActorEventCoordinator::*)(
-                            EventRef<ActorGameplayEvent<CoordinatorResult>> const&
-                        );
-                        if ((eventCoordinator.*static_cast<SendEventFunc>(&ActorEventCoordinator::sendEvent))(eventRef)
-                            != CoordinatorResult::Continue) {
-                            touchedIndestructibleOrCancelled = true;
-                            continue;
-                        }
-                    }
-
+                    // 26.32 适配：原版的 ActorGriefingBlockEvent 否决派发（ActorEventCoordinator::sendEvent
+                    // 的 CoordinatorResult 重载）已从原版移除，生物破坏不再有原版否决通道，
+                    // Catalyst 的 Before 事件继续提供取消能力。
                     BlockChangeContext changeContext{};
                     changeContext.mContextSource = ActorChangeContext{this};
 

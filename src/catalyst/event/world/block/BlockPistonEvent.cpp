@@ -11,6 +11,7 @@
 #include "mc/world/level/block/actor/PistonState.h"
 #include "mc/world/level/dimension/Dimension.h"
 #include "mc/world/redstone/circuit/CircuitSystem.h"
+#include "mc/world/redstone/circuit/components/BaseCircuitComponent.h"
 
 
 #include "mc/deps/nbt/CompoundTag.h"
@@ -46,7 +47,15 @@ LL_TYPE_INSTANCE_HOOK(
     auto  state      = this->mState;
 
 
-    auto strength = circuit->getStrength(pos);
+    // 26.32: CircuitSystem::getStrength 被移除，改为直接从场景图查指定位置的元件信号强度
+    int strength = 0;
+    if (circuit) {
+        auto const& allComponents = circuit->mSceneGraph->mAllComponents;
+        auto const  it            = allComponents.find(pos);
+        if (it != allComponents.end() && it->second) {
+            strength = it->second->getStrength();
+        }
+    }
     /*
         logger.debug(
             "活塞位置: ({}, {}, {}), 当前状态: {}, 新状态: {}, 信号强度: {}",

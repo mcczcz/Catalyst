@@ -25,6 +25,14 @@ static ::Player* asPlayer(::Actor* actor) {
     return nullptr;
 }
 
+// 26.32 适配：ItemStack(ItemInstance) 转换构造已无符号。ItemInstance 仅含基类布局，
+// 故默认构造后基类切片赋值即可得到等价 ItemStack（事件载荷不需要网络净 ID）
+static ::ItemStack toStack(::ItemStackBase const& base) {
+    ::ItemStack stack;
+    static_cast<::ItemStackBase&>(stack) = base;
+    return stack;
+}
+
 LL_TYPE_INSTANCE_HOOK(
     FrameItemChangePlaceHook,
     ll::memory::HookPriority::Normal,
@@ -39,11 +47,11 @@ LL_TYPE_INSTANCE_HOOK(
     }
     auto& bus = ll::event::EventBus::getInstance();
 
-    ::ItemStack placedItem(item);
+    ::ItemStack placedItem = toStack(item);
 
     FrameItemChangeBeforeEvent beforeEvent(
         asPlayer(entitySource),
-        this->getPosition(),
+        this->mPosition.get(),
         FrameItemChangeEvent::Action::Place,
         placedItem,
         false
@@ -57,7 +65,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     FrameItemChangeAfterEvent afterEvent(
         asPlayer(entitySource),
-        this->getPosition(),
+        this->mPosition.get(),
         FrameItemChangeEvent::Action::Place,
         placedItem,
         false
@@ -79,11 +87,11 @@ LL_TYPE_INSTANCE_HOOK(
     }
     auto& bus = ll::event::EventBus::getInstance();
 
-    ::ItemStack takenItem(this->getFramedItem());
+    ::ItemStack takenItem = toStack(this->mItem.get());
 
     FrameItemChangeBeforeEvent beforeEvent(
         asPlayer(entitySource),
-        this->getPosition(),
+        this->mPosition.get(),
         FrameItemChangeEvent::Action::Take,
         takenItem,
         dropItem
@@ -97,7 +105,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     FrameItemChangeAfterEvent afterEvent(
         asPlayer(entitySource),
-        this->getPosition(),
+        this->mPosition.get(),
         FrameItemChangeEvent::Action::Take,
         takenItem,
         dropItem

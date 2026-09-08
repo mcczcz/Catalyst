@@ -29,7 +29,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     ChiseledBookshelfItemChangeBeforeEvent beforeEvent(
         player,
-        bookshelfActor.getPosition(),
+        bookshelfActor.mPosition.get(),
         ChiseledBookshelfItemChangeEvent::Action::Put,
         hitSlot,
         heldItem
@@ -43,7 +43,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     ChiseledBookshelfItemChangeAfterEvent afterEvent(
         player,
-        bookshelfActor.getPosition(),
+        bookshelfActor.mPosition.get(),
         ChiseledBookshelfItemChangeEvent::Action::Put,
         hitSlot,
         heldItem
@@ -51,7 +51,8 @@ LL_TYPE_INSTANCE_HOOK(
     bus.publish(afterEvent);
 }
 
-LL_TYPE_INSTANCE_HOOK(
+// 26.32 适配：_retrieveBook 由成员函数改为 static 函数
+LL_TYPE_STATIC_HOOK(
     ChiseledBookshelfItemChangeTakeHook,
     ll::memory::HookPriority::Normal,
     ChiseledBookshelfBlock,
@@ -65,7 +66,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     ChiseledBookshelfItemChangeBeforeEvent beforeEvent(
         player,
-        bookshelfActor.getPosition(),
+        bookshelfActor.mPosition.get(),
         ChiseledBookshelfItemChangeEvent::Action::Take,
         hitSlot,
         takenItem
@@ -79,7 +80,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     ChiseledBookshelfItemChangeAfterEvent afterEvent(
         player,
-        bookshelfActor.getPosition(),
+        bookshelfActor.mPosition.get(),
         ChiseledBookshelfItemChangeEvent::Action::Take,
         hitSlot,
         takenItem

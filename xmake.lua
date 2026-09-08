@@ -5,9 +5,9 @@ add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
 -- add_requires("levilamina develop") to use develop version
 -- please note that you should add bdslibrary yourself if using dev version
 if is_config("target_type", "server") then
-    add_requires("levilamina 26.20.0", {configs = {target_type = "server"}})
+    add_requires("levilamina 26.32", {configs = {target_type = "server"}})
 else
-    add_requires("levilamina 26.20.0", {configs = {target_type = "client"}})
+    add_requires("levilamina 26.32", {configs = {target_type = "client"}})
 end
 
 add_requires("levibuildscript")
@@ -26,7 +26,7 @@ target("Catalyst")
     set_toolset("cxx", "C:/Program Files/LLVM/bin/clang-cl.exe")
     add_rules("@levibuildscript/linkrule")
     add_rules("@levibuildscript/modpacker")
-    add_cxflags( "/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
+    add_cxflags( " /EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
     add_defines("NOMINMAX", "UNICODE", "CATALYST_EXPORTS")
     add_packages("levilamina")
     set_exceptions("none") -- To avoid conflicts with /EHa.

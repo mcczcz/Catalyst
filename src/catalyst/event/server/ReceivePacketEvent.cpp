@@ -179,8 +179,9 @@ LL_TYPE_INSTANCE_HOOK(
             Catalyst::logger.error("PacketReceiveEvent: Bad packet size: {}", packet_size);
             continue;
         }
-        if (auto result = packet->readNoHeader(read_stream, *network->mReflectionCtx, sub_client_id);
-            !result.Base::has_value()) {
+        // 26.32: Packet::readNoHeader removed; replicate it (set sub client id, then virtual read with ctx)
+        packet->mSenderSubId = sub_client_id;
+        if (auto result = packet->read(read_stream, *network->mReflectionCtx); !result.Base::has_value()) {
             Catalyst::logger.error("PacketReceiveEvent: Bad packet!");
             continue;
         }
