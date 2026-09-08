@@ -26,7 +26,7 @@ target("Catalyst")
     set_toolset("cxx", "C:/Program Files/LLVM/bin/clang-cl.exe")
     add_rules("@levibuildscript/linkrule")
     add_rules("@levibuildscript/modpacker")
-    add_cxflags("/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
+    add_cxflags( " /EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
     add_defines("NOMINMAX", "UNICODE", "CATALYST_EXPORTS")
     add_packages("levilamina")
     set_exceptions("none") -- To avoid conflicts with /EHa.

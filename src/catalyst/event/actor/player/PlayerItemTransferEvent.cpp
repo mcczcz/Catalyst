@@ -7,6 +7,7 @@
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/actor/player/PlayerInventory.h"
 #include "mc/world/containers/managers/IContainerManager.h"
+#include "mc/world/containers/managers/models/ContainerManagerModel.h"
 #include "mc/world/inventory/network/ItemStackNetManagerBase.h"
 #include "mc/world/inventory/network/ItemStackNetManagerServer.h"
 #include "mc/world/inventory/network/ItemStackNetResult.h"
@@ -59,9 +60,11 @@ LL_TYPE_INSTANCE_HOOK(
     auto const& srcSlotInfo = transferAction.mSrc.get();
     auto const& dstSlotInfo = transferAction.mDst.get();
 
-    auto containerManager = player.getContainerManager().lock();
-    if (!containerManager) {
-        return origin(requestAction);
+    // 26.32 适配：Player::getContainerManager() 已无符号，改用 mContainerManager 成员
+    //（ContainerManagerModel 实现 IContainerManager）
+    auto containerModel = player.mContainerManager.get();
+    if (!containerModel) {
+        return origin(requestAction, isSrcHintSlot, isDstHintSlot, isSwap);
     }
 
     // 玩家背包类请求使用绝对背包槽号；ContainerModel 会再次应用区域偏移，不能交给它解析。
@@ -73,7 +76,7 @@ LL_TYPE_INSTANCE_HOOK(
             || containerName == ContainerEnumName::CombinedHotbarAndInventoryContainer) {
             return player.mInventory->mInventory->getItem(slotInfo.mSlot);
         }
-        return containerManager->getFullContainerSlot(slotInfo.mSlot, slotInfo.mFullContainerName);
+        return containerModel->getFullContainerSlot(slotInfo.mSlot, slotInfo.mFullContainerName);
     };
 
     // 在执行请求前复制快照，确保 AfterEvent 仍能表示本次实际转移的物品。
