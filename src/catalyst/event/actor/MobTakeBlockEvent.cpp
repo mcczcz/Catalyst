@@ -5,31 +5,42 @@ struct NamedMolangScript {};
 
 #include "MobTakeBlockEvent.h"
 
+#include <algorithm>
+
+#include "catalyst/event/ActorGameplayEventDispatch.h"
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
+#include "mc/deps/core/math/Vec3.h"
+#include "mc/deps/ecs/WeakEntityRef.h"
+#include "mc/deps/ecs/gamerefs_entity/EntityContext.h"
 #include "mc/gameplayhandlers/CoordinatorResult.h"
+#include "mc/legacy/ActorUniqueID.h"
+#include "mc/network/packet/MobEquipmentPacket.h"
+#include "mc/network/packet/MobEquipmentPacketPayload.h"
+#include "mc/util/BlockUtils.h"
+#include "mc/util/IntRange.h"
 #include "mc/util/Random.h"
 #include "mc/util/VariantParameterList.h"
+#include "mc/world/ContainerID.h"
 #include "mc/world/actor/ActorDefinitionDescriptor.h"
 #include "mc/world/actor/Mob.h"
 #include "mc/world/actor/ai/goal/TakeBlockGoal.h"
-#include "mc/world/events/ActorEventCoordinator.h"
 #include "mc/world/events/ActorGameplayEvent.h"
 #include "mc/world/events/ActorGriefingBlockEvent.h"
 #include "mc/world/events/EventRef.h"
-#include "mc/world/events/MutableActorGameplayEvent.h"
 #include "mc/world/events/gameevents/GameEventRegistry.h"
 #include "mc/world/item/ItemStack.h"
 #include "mc/world/level/BlockPos.h"
 #include "mc/world/level/BlockSource.h"
-#include "mc/world/level/Level.h"
+#include "mc/world/level/ILevel.h"
 #include "mc/world/level/ShapeType.h"
 #include "mc/world/level/block/ActorChangeContext.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/block/BlockChangeContext.h"
 #include "mc/world/level/block/BlockDescriptor.h"
 #include "mc/world/level/dimension/Dimension.h"
+
 #include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
 
@@ -41,110 +52,105 @@ void MobTakeBlockEvent::serialize(CompoundTag& nbt) const {
     nbt["block"] = ll::event::serializeRefObj(block());
 }
 
+namespace {
 
-
-LL_TYPE_INSTANCE_HOOK(TakeBlockGoalTickHook, HookPriority::Normal, TakeBlockGoal, &TakeBlockGoal::$tick, void) {
-    auto&     level  = mMob.getLevel();
-    auto&     random = level.getRandom();
-    auto&     mobPos = mMob.getPosition();
-    BlockPos  targetPos(mobPos);
-
-    auto& def     = mDefinition.get();
-    auto& xzRange = def.mXZRange.get();
-    auto& yRange  = def.mYRange.get();
-
-    int xzMin = xzRange.rangeMin;
-    int xzMax = xzRange.rangeMax;
-    int yMin  = yRange.rangeMin;
-    int yMax  = yRange.rangeMax;
-
-    if (xzMin < xzMax) {
-        targetPos.x += random.nextInt(xzMax - xzMin + 1) + xzMin;
+int rollRange(Random& random, IntRange const& range) {
+    int value = range.rangeMin;
+    if (range.rangeMax > range.rangeMin) {
+        value += random.nextInt(range.rangeMax - range.rangeMin + 1);
     }
-    if (yMin < yMax) {
-        targetPos.y += random.nextInt(yMax - yMin + 1) + yMin;
-    }
-    if (xzMin < xzMax) {
-        targetPos.z += random.nextInt(xzMax - xzMin + 1) + xzMin;
-    }
+    return value;
+}
 
-    auto& blockSource = mMob.getDimensionBlockSource();
+} // namespace
+
+LL_TYPE_INSTANCE_HOOK(
+    MobTakeBlockEventHook,
+    ll::memory::HookPriority::Normal,
+    TakeBlockGoal,
+    &TakeBlockGoal::$tick,
+    void
+) {
+    Mob&  mob    = this->mMob;
+    auto& random = mob.mLevel ? mob.mLevel->getThreadRandom() : Random::mThreadLocalRandom();
+
+    BlockPos targetPos(mob.getPosition());
+    targetPos.x += rollRange(random, this->mXZRange);
+    targetPos.y += rollRange(random, this->mYRange);
+    targetPos.z += rollRange(random, this->mXZRange);
+
+    auto& blockSource = mob.getDimensionBlockSource();
     auto& block       = blockSource.getBlock(targetPos);
-
     if (block.isAir()) {
         return;
     }
 
-    auto& validBlocks = def.mValidBlocks.get();
-    if (!validBlocks.empty()) {
-        if (!BlockDescriptor::anyMatch(validBlocks, block)) {
-            return;
-        }
+    auto const& validBlocks = this->mValidBlocks.get();
+    if (!validBlocks.empty()
+        && std::none_of(validBlocks.begin(), validBlocks.end(), [&](BlockDescriptor const& descriptor) {
+               return descriptor.matches(block);
+           })) {
+        return;
     }
 
-    if (def.mRequiresLineOfSight) {
-        Vec3 blockCenter((float)targetPos.x, (float)targetPos.y, (float)targetPos.z);
-        if (!mMob.canSee(blockCenter, ShapeType::Collision)) {
-            return;
-        }
+    if (this->mRequiresLineOfSight && !BlockUtils::canSee(mob, targetPos, ShapeType::Collision)) {
+        return;
     }
 
     auto& bus = ll::event::EventBus::getInstance();
 
     // 发布 BeforeEvent
-    MobTakeBlockBeforeEvent beforeEvent(mMob, targetPos, block);
+    MobTakeBlockBeforeEvent beforeEvent(mob, targetPos, block);
     bus.publish(beforeEvent);
     if (beforeEvent.isCancelled()) {
         return;
     }
 
-    // 获取 ActorEventCoordinator 并发送事件
-    auto& eventCoordinator = level.getActorEventCoordinator();
+    // 原版在此派发 ActorGriefingBlockEvent（脚本 API 可取消），handle 存活到函数结束。
+    BlockSourceHandleGuard blockSourceHandle(blockSource);
 
-    ActorGriefingBlockEvent const event{
-        mMob.getEntityContext().getWeakRef(),
+    ActorGriefingBlockEvent const griefingEvent{
+        mob.getEntityContext().getWeakRef(),
         &block,
-        Vec3((float)targetPos.x, (float)targetPos.y, (float)targetPos.z),
-        nullptr
+        Vec3(static_cast<float>(targetPos.x), static_cast<float>(targetPos.y), static_cast<float>(targetPos.z)),
+        blockSourceHandle.get()
     };
-
-    EventRef<ActorGameplayEvent<CoordinatorResult>> const eventRef(event);
-    using SendEventFunc =
-        CoordinatorResult (ActorEventCoordinator::*)(EventRef<ActorGameplayEvent<CoordinatorResult>> const&);
-    CoordinatorResult result =
-        (eventCoordinator.*static_cast<SendEventFunc>(&ActorEventCoordinator::sendEvent))(eventRef);
-    if (result != CoordinatorResult::Continue) {
+    EventRef<ActorGameplayEvent<CoordinatorResult>> const eventRef(griefingEvent);
+    if (sendActorGameplayEvent(mob.getLevel(), eventRef) == CoordinatorResult::Cancel) {
         return;
     }
 
-    // 创建物品并添加到生物背包
-    ItemStack item(block, 1, nullptr);
-    mMob.add(item);
+    // 方块变为手持物并同步装备包（ItemStack(Block const&, int, CompoundTag const*) 已不再导出，reinit 与之等价）
+    ItemStack item;
+    item.reinit(block, 1);
+    mob.setCarriedItem(item);
+    MobEquipmentPacket packet(MobEquipmentPacketPayload(mob.getRuntimeID(), item, 0, 0, ContainerID::Inventory));
+    mob.getDimension().sendPacketForEntity(mob, packet, nullptr);
 
     // 移除方块
     BlockChangeContext changeContext{};
-    changeContext.mContextSource = ActorChangeContext{&mMob};
+    changeContext.mContextSource = ActorChangeContext{&mob};
     blockSource.removeBlock(targetPos, changeContext);
+    blockSource.postGameEvent(&mob, GameEventRegistry::blockDestroy(), targetPos, &block);
 
-    // 发送游戏事件
-    blockSource.postGameEvent(&mMob, GameEventRegistry::blockDestroy(), targetPos, &block);
-
-    // 执行触发器
-    VariantParameterList params;
-    params.mSelf  = &mMob;
-    params.mBlock = &targetPos;
-    auto& trigger = def.mOnTake.get();
-    ActorDefinitionDescriptor::executeTrigger(mMob, trigger, params);
+    // 执行 on_take 触发器
+    VariantParameterList triggerParams{};
+    triggerParams.mSelf = &mob;
+    if (mob.mLevel && mob.mTargetId->rawID != -1) {
+        triggerParams.mTarget = mob.mLevel->fetchEntity(mob.mTargetId, false);
+    }
+    triggerParams.mBlock = &targetPos;
+    ActorDefinitionDescriptor::executeTrigger(mob, this->mOnTake, triggerParams);
 
     // 发布 AfterEvent
-    MobTakeBlockAfterEvent afterEvent(mMob, targetPos, block);
+    MobTakeBlockAfterEvent afterEvent(mob, targetPos, block);
     bus.publish(afterEvent);
 }
 
 CATALYST_HOOKED_EVENT_PAIR(
     MobTakeBlockBeforeEvent,
     MobTakeBlockAfterEvent,
-    TakeBlockGoalTickHook
+    MobTakeBlockEventHook
 )
 
 } // namespace Catalyst
