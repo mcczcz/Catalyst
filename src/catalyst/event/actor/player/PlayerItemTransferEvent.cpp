@@ -2,21 +2,15 @@
 
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
+#include "ll/api/event/EventRefObjSerializer.h"
 #include "ll/api/memory/Hook.h"
-#include "mc/world/actor/player/Inventory.h"
+#include "mc/deps/nbt/CompoundTag.h"
+#include "mc/world/SimpleSparseContainer.h"
 #include "mc/world/actor/player/Player.h"
-#include "mc/world/actor/player/PlayerInventory.h"
-#include "mc/world/containers/managers/IContainerManager.h"
-#include "mc/world/inventory/network/ItemStackNetManagerBase.h"
-#include "mc/world/inventory/network/ItemStackNetManagerServer.h"
 #include "mc/world/inventory/network/ItemStackNetResult.h"
-#include "mc/world/inventory/network/ItemStackRequestAction.h"
 #include "mc/world/inventory/network/ItemStackRequestActionHandler.h"
 #include "mc/world/inventory/network/ItemStackRequestActionTransferBase.h"
 #include "mc/world/inventory/network/ItemStackRequestActionType.h"
-
-#include "mc/deps/nbt/CompoundTag.h"
-#include "ll/api/event/EventRefObjSerializer.h"
 
 namespace Catalyst {
 
@@ -38,48 +32,41 @@ LL_TYPE_INSTANCE_HOOK(
     PlayerItemTransferEventHook,
     HookPriority::Normal,
     ItemStackRequestActionHandler,
-    &ItemStackRequestActionHandler::handleRequestAction,
+    &ItemStackRequestActionHandler::_handleTransfer,
     ItemStackNetResult,
-    ItemStackRequestAction const& requestAction
+    ItemStackRequestActionTransferBase const& requestAction,
+    bool                                      isSrcHintSlot,
+    bool                                      isDstHintSlot,
+    bool                                      isSwap
 ) {
     auto actionType = requestAction.mActionType;
 
     // 只处理物品转移相关的操作
     if (actionType != ItemStackRequestActionType::Take && actionType != ItemStackRequestActionType::Place
         && actionType != ItemStackRequestActionType::Swap) {
-        return origin(requestAction);
+        return origin(requestAction, isSrcHintSlot, isDstHintSlot, isSwap);
     }
 
-    auto const& transferAction = static_cast<ItemStackRequestActionTransferBase const&>(requestAction);
-    auto&       player         = mPlayer;
+    auto&       player      = mPlayer;
+    auto const& srcSlotInfo = requestAction.mSrc.get();
+    auto const& dstSlotInfo = requestAction.mDst.get();
 
-    // 获取屏幕上下文
-    ContainerScreenContext screenContext = mItemStackNetManager.getScreenContext();
-
-    // 获取源物品槽位信息 - 使用 .get() 访问 TypedStorage 内的数据
-    auto const& srcSlotInfo = transferAction.mSrc.get();
-    auto const& dstSlotInfo = transferAction.mDst.get();
-
-    auto containerManager = player.getContainerManager().lock();
-    if (!containerManager) {
-        return origin(requestAction);
+    // 临时容器包含同一请求中先前动作的结果；不要重复调用有缓存副作用的 _validateRequestSlot。
+    auto srcContainer = _getOrInitSparseContainer(srcSlotInfo.mFullContainerName);
+    if (!srcContainer) {
+        return origin(requestAction, isSrcHintSlot, isDstHintSlot, isSwap);
+    }
+    auto dstContainer = _getOrInitSparseContainer(dstSlotInfo.mFullContainerName);
+    if (!dstContainer) {
+        return origin(requestAction, isSrcHintSlot, isDstHintSlot, isSwap);
     }
 
-    // 玩家背包类请求使用绝对背包槽号；ContainerModel 会再次应用区域偏移，不能交给它解析。
-    // 其他 UI 容器仍由当前容器管理器按 FullContainerName 解析。
-    auto getItemSnapshot = [&](auto const& slotInfo) -> ItemStack {
-        auto containerName = slotInfo.mFullContainerName.mName;
-        if (containerName == ContainerEnumName::InventoryContainer
-            || containerName == ContainerEnumName::HotbarContainer
-            || containerName == ContainerEnumName::CombinedHotbarAndInventoryContainer) {
-            return player.mInventory->mInventory->getItem(slotInfo.mSlot);
-        }
-        return containerManager->getFullContainerSlot(slotInfo.mSlot, slotInfo.mFullContainerName);
-    };
-
-    // 在执行请求前复制快照，确保 AfterEvent 仍能表示本次实际转移的物品。
-    ItemStack srcItem = getItemSnapshot(srcSlotInfo);
-    ItemStack dstItem = getItemSnapshot(dstSlotInfo);
+    // Before/After 共用动作执行前的快照，并使用当前请求对应的屏幕上下文。
+    ItemStack              srcItem       = srcContainer->getItem(srcSlotInfo.mSlot);
+    ItemStack              dstItem       = dstContainer->getItem(dstSlotInfo.mSlot);
+    ContainerScreenContext screenContext = getScreenContext();
+    // Swap 不序列化 mAmount；Take/Place 保留请求数量语义，由原版处理数量限制。
+    uchar const amount = isSwap ? srcItem.mCount : requestAction.mAmount;
 
     auto& bus = ll::event::EventBus::getInstance();
 
@@ -90,7 +77,7 @@ LL_TYPE_INSTANCE_HOOK(
         srcSlotInfo.mSlot,
         dstSlotInfo.mFullContainerName,
         dstSlotInfo.mSlot,
-        transferAction.mAmount,
+        amount,
         srcItem,
         dstItem,
         screenContext
@@ -101,7 +88,7 @@ LL_TYPE_INSTANCE_HOOK(
         return ItemStackNetResult::Error;
     }
 
-    auto result = origin(requestAction);
+    auto result = origin(requestAction, isSrcHintSlot, isDstHintSlot, isSwap);
 
     if (result == ItemStackNetResult::Success) {
         PlayerItemTransferAfterEvent afterEvent(
@@ -111,7 +98,7 @@ LL_TYPE_INSTANCE_HOOK(
             srcSlotInfo.mSlot,
             dstSlotInfo.mFullContainerName,
             dstSlotInfo.mSlot,
-            transferAction.mAmount,
+            amount,
             srcItem,
             dstItem,
             screenContext
@@ -122,10 +109,6 @@ LL_TYPE_INSTANCE_HOOK(
     return result;
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    PlayerItemTransferBeforeEvent,
-    PlayerItemTransferAfterEvent,
-    PlayerItemTransferEventHook
-)
+CATALYST_HOOKED_EVENT_PAIR(PlayerItemTransferBeforeEvent, PlayerItemTransferAfterEvent, PlayerItemTransferEventHook)
 
 } // namespace Catalyst

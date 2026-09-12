@@ -38,7 +38,7 @@
 #include "mc/world/level/storage/GameRuleId.h"
 #include "mc/world/level/storage/GameRules.h"
 #include "mc/world/phys/HitResultType.h"
-
+/*
 namespace Catalyst {
 
 namespace {
@@ -185,9 +185,8 @@ void tryReflectHitProjectileOnHurt(Actor& owner, Actor* hitActor) {
 
     auto* sourceActor = owner.getLevel().fetchEntity(owner.getSourceUniqueID(), false);
     if (sourceActor != nullptr) {
-        ActorDamageByChildActorSource damageSource(owner, *sourceActor, SharedTypes::Legacy::ActorDamageCause::Projectile);
-        hitProjectile->_tryReflectOnHurt(*hitActor, damageSource);
-    } else {
+        ActorDamageByChildActorSource damageSource(owner, *sourceActor,
+SharedTypes::Legacy::ActorDamageCause::Projectile); hitProjectile->_tryReflectOnHurt(*hitActor, damageSource); } else {
         ActorDamageByActorSource damageSource(owner, SharedTypes::Legacy::ActorDamageCause::Projectile);
         hitProjectile->_tryReflectOnHurt(*hitActor, damageSource);
     }
@@ -292,3 +291,4 @@ CATALYST_HOOKED_EVENT_PAIR(
 
 } // namespace Catalyst
 
+*/

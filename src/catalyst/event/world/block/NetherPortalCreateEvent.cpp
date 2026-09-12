@@ -9,6 +9,7 @@
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
+#include "mc/util/BaseGameVersion.h"
 #include "mc/world/actor/Actor.h"
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
@@ -23,8 +24,8 @@
 #include "mc/world/level/block/registry/BlockTypeRegistry.h"
 #include "mc/world/level/material/Material.h"
 #include "mc/world/level/storage/LevelData.h"
-#include "mc/util/BaseGameVersion.h"
 
+/*
 
 namespace std {
 
@@ -60,8 +61,9 @@ struct equal_to<::PortalRecord> {
 
 } // namespace std
 
-#include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/deps/nbt/CompoundTag.h"
+
 
 namespace Catalyst {
 
@@ -92,10 +94,10 @@ void NetherPortalCreateAfterEvent::serialize(CompoundTag& nbt) const {
 
 
 static BlockPos getPortalInnerPosFromRecord(::PortalRecord const& record) {
-    auto pos = record.mBaseBlockPos.get();
-    pos.x += static_cast<int>(record.mXInc);
-    pos.z += static_cast<int>(record.mZInc);
-    pos.y += 1;
+    auto pos  = record.mBaseBlockPos.get();
+    pos.x    += static_cast<int>(record.mXInc);
+    pos.z    += static_cast<int>(record.mZInc);
+    pos.y    += 1;
     return pos;
 }
 
@@ -128,7 +130,7 @@ static int floorMod(int value, int modulus) {
 }
 
 static bool canPortalReplaceBlock(::BlockSource& source, ::BlockPos const& pos) {
-    auto const& minVersion = ::PortalForcer::MIN_PORTAL_REPLACE_BLOCK_FIX_VERSION();
+    auto const& minVersion   = ::PortalForcer::MIN_PORTAL_REPLACE_BLOCK_FIX_VERSION();
     auto const& worldVersion = source.getLevel().getLevelData().getBaseGameVersion();
     if (!minVersion.isCompatibleWith(worldVersion)) {
         return source.isEmptyBlock(pos);
@@ -168,11 +170,11 @@ static void getStepFromOrientation4(int orientationId, int& stepX, int& stepZ) {
 static void normalizeStepAndOrigin(::BlockPos& innerBottomLeft, int& stepX, int& stepZ) {
     if (stepX < 0) {
         innerBottomLeft.x += stepX;
-        stepX = -stepX;
+        stepX              = -stepX;
     }
     if (stepZ < 0) {
         innerBottomLeft.z += stepZ;
-        stepZ = -stepZ;
+        stepZ              = -stepZ;
     }
 }
 
@@ -241,10 +243,11 @@ static bool validatePortalVolumeSecondPass(
     return true;
 }
 
-static PortalCandidate findPortalCandidate(::BlockSource& source, ::BlockPos const& center, ::Vec3 const& entityPos, int seed) {
+static PortalCandidate
+findPortalCandidate(::BlockSource& source, ::BlockPos const& center, ::Vec3 const& entityPos, int seed) {
     PortalCandidate best;
-    int minY = source.getMinHeight();
-    int maxY = source.getMaxHeight() - 1;
+    int             minY = source.getMinHeight();
+    int             maxY = source.getMaxHeight() - 1;
     if (minY > maxY) {
         return best;
     }
@@ -334,10 +337,9 @@ static ::PortalAxis axisFromStep(int stepX, int stepZ) {
 }
 
 static void placeFallbackSupport(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
-    auto const& netherrack =
-        ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Netherrack(), true);
-    int depthX = stepZ;
-    int depthZ = -stepX;
+    auto const& netherrack = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Netherrack(), true);
+    int         depthX     = stepZ;
+    int         depthZ     = -stepX;
 
     // Cross-shaped pattern: depth ±2 for inner columns (width 0,1),
     // depth ±1 for frame columns (width -1,2). Matches vanilla exactly.
@@ -346,10 +348,10 @@ static void placeFallbackSupport(::BlockSource& source, ::BlockPos const& innerB
             if (std::abs(depth) == 2 && (width == -1 || width == 2)) {
                 continue;
             }
-            BlockPos p = innerBottomLeft;
-            p.x += stepX * width + depthX * depth;
-            p.z += stepZ * width + depthZ * depth;
-            p.y -= 1;
+            BlockPos p  = innerBottomLeft;
+            p.x        += stepX * width + depthX * depth;
+            p.z        += stepZ * width + depthZ * depth;
+            p.y        -= 1;
             if (source.getBlock(p).isAir()) {
                 source.setBlock(p, netherrack, 3, nullptr, ::BlockChangeContext{});
             }
@@ -357,7 +359,8 @@ static void placeFallbackSupport(::BlockSource& source, ::BlockPos const& innerB
     }
 }
 
-static void prepareForcedPlacementVolume(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
+static void
+prepareForcedPlacementVolume(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
     auto const& obsidian = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Obsidian(), true);
     auto const& air      = ::BlockTypeRegistry::get().getDefaultBlockState(::BedrockBlockNames::Air(), false);
     int         depthX   = stepZ;
@@ -365,17 +368,17 @@ static void prepareForcedPlacementVolume(::BlockSource& source, ::BlockPos const
 
     for (int depth = -1; depth <= 1; ++depth) {
         for (int w = 0; w < 2; ++w) {
-            BlockPos p = innerBottomLeft;
-            p.x += stepX * w + depthX * depth;
-            p.z += stepZ * w + depthZ * depth;
+            BlockPos p  = innerBottomLeft;
+            p.x        += stepX * w + depthX * depth;
+            p.z        += stepZ * w + depthZ * depth;
 
-            BlockPos floor = p;
-            floor.y -= 1;
+            BlockPos floor  = p;
+            floor.y        -= 1;
             source.setBlock(floor, obsidian, 3, nullptr, ::BlockChangeContext{});
 
             for (int h = 0; h < 3; ++h) {
-                BlockPos interior = p;
-                interior.y += h;
+                BlockPos interior  = p;
+                interior.y        += h;
                 source.setBlock(interior, air, 3, nullptr, ::BlockChangeContext{});
             }
         }
@@ -386,34 +389,28 @@ static void placePortalBlocks(::BlockSource& source, ::BlockPos const& innerBott
     auto const& obsidian = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Obsidian(), true);
     auto const& portal   = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Portal(), true);
 
-    auto axis = axisFromStep(stepX, stepZ);
-    auto portalWithAxis = portal.setState(::VanillaStates::PortalAxis(), static_cast<int>(axis));
-    auto const& portalState = portalWithAxis ? portalWithAxis.get() : portal;
+    auto        axis           = axisFromStep(stepX, stepZ);
+    auto        portalWithAxis = portal.setState(::VanillaStates::PortalAxis(), static_cast<int>(axis));
+    auto const& portalState    = portalWithAxis ? portalWithAxis.get() : portal;
 
     for (int w = -1; w <= 2; ++w) {
         for (int h = -1; h <= 3; ++h) {
-            BlockPos p = innerBottomLeft;
-            p.x += stepX * w;
-            p.z += stepZ * w;
-            p.y += h;
+            BlockPos p  = innerBottomLeft;
+            p.x        += stepX * w;
+            p.z        += stepZ * w;
+            p.y        += h;
 
             bool frame = (w == -1 || w == 2 || h == -1 || h == 3);
-            source.setBlock(
-                p,
-                frame ? obsidian : portalState,
-                2,
-                nullptr,
-                ::BlockChangeContext{}
-            );
+            source.setBlock(p, frame ? obsidian : portalState, 2, nullptr, ::BlockChangeContext{});
         }
     }
 
     for (int w = -1; w <= 2; ++w) {
         for (int h = -1; h <= 3; ++h) {
-            BlockPos p = innerBottomLeft;
-            p.x += stepX * w;
-            p.z += stepZ * w;
-            p.y += h;
+            BlockPos p  = innerBottomLeft;
+            p.x        += stepX * w;
+            p.z        += stepZ * w;
+            p.y        += h;
             source.updateNeighborsAt(p);
         }
     }
@@ -442,10 +439,10 @@ static ::PortalRecord buildRecordFromShapeAndPlacement(
     int xInc = axis == ::PortalAxis::X ? 1 : 0;
     int zInc = axis == ::PortalAxis::Z ? 1 : 0;
 
-    auto innerBottomLeft = shape.mBottomLeftValid ? shape.mBottomLeft.get() : placedInnerBottomLeft;
-    auto base            = innerBottomLeft;
-    base.x -= xInc;
-    base.z -= zInc;
+    auto innerBottomLeft  = shape.mBottomLeftValid ? shape.mBottomLeft.get() : placedInnerBottomLeft;
+    auto base             = innerBottomLeft;
+    base.x               -= xInc;
+    base.z               -= zInc;
     if (shape.mBottomLeftValid && axis == ::PortalAxis::X) {
         base.x -= (shape.mWidth - 2);
     }
@@ -463,20 +460,18 @@ static std::vector<BlockPos> buildFallbackPortalBlocks(::BlockPos const& origin,
     blocks.reserve(6);
     for (int w = 0; w < 2; ++w) {
         for (int h = 0; h < 3; ++h) {
-            BlockPos p = origin;
-            p.x += stepX * w;
-            p.z += stepZ * w;
-            p.y += h;
+            BlockPos p  = origin;
+            p.x        += stepX * w;
+            p.z        += stepZ * w;
+            p.y        += h;
             blocks.emplace_back(p);
         }
     }
     return blocks;
 }
 
-static std::vector<BlockPos> buildPortalBlocksFromShapeAndRecord(
-    ::PortalShape const&  shape,
-    ::PortalRecord const& record
-) {
+static std::vector<BlockPos>
+buildPortalBlocksFromShapeAndRecord(::PortalShape const& shape, ::PortalRecord const& record) {
     std::vector<BlockPos> blocks;
 
     int stepX = static_cast<int>(record.mXInc);
@@ -493,10 +488,10 @@ static std::vector<BlockPos> buildPortalBlocksFromShapeAndRecord(
         blocks.reserve(static_cast<size_t>(shape.mWidth * shape.mHeight));
         for (int w = 0; w < shape.mWidth; ++w) {
             for (int h = 0; h < shape.mHeight; ++h) {
-                BlockPos p = bottomLeft;
-                p.x += stepX * w;
-                p.y += h;
-                p.z += stepZ * w;
+                BlockPos p  = bottomLeft;
+                p.x        += stepX * w;
+                p.y        += h;
+                p.z        += stepZ * w;
                 blocks.emplace_back(p);
             }
         }
@@ -514,10 +509,10 @@ static std::vector<BlockPos> buildPortalBlocksFromShapeAndRecord(
     blocks.reserve(6);
     for (int w = 0; w < 2; ++w) {
         for (int h = 0; h < 3; ++h) {
-            BlockPos p = origin;
-            p.x += stepX * w;
-            p.y += h;
-            p.z += stepZ * w;
+            BlockPos p  = origin;
+            p.x        += stepX * w;
+            p.y        += h;
+            p.z        += stepZ * w;
             blocks.emplace_back(p);
         }
     }
@@ -550,7 +545,7 @@ LL_TYPE_INSTANCE_HOOK(
         candidate.selected = true;
     }
 
-    auto& bus = ll::event::EventBus::getInstance();
+    auto&                         bus = ll::event::EventBus::getInstance();
     NetherPortalCreateBeforeEvent beforeEvent(
         const_cast<Actor&>(entity),
         centerPos,
@@ -577,12 +572,12 @@ LL_TYPE_INSTANCE_HOOK(
     shape.mAxis = axis;
     shape.evaluate(candidate.pos, source);
 
-    auto dimensionId = source.getDimensionId();
-    auto builtRecord = buildRecordFromShapeAndPlacement(shape, candidate.pos, candidate.stepX, candidate.stepZ);
-    auto& recordSet  = this->mPortalRecords.get()[dimensionId];
-    auto  insertRet  = recordSet.emplace(builtRecord);
-    auto  iter       = insertRet.first;
-    this->mDirty     = true;
+    auto  dimensionId  = source.getDimensionId();
+    auto  builtRecord  = buildRecordFromShapeAndPlacement(shape, candidate.pos, candidate.stepX, candidate.stepZ);
+    auto& recordSet    = this->mPortalRecords.get()[dimensionId];
+    auto  insertRet    = recordSet.emplace(builtRecord);
+    auto  iter         = insertRet.first;
+    this->mDirty       = true;
     auto const& record = *iter;
 
     BlockPos portalPos = getPortalInnerPosFromRecord(record);
@@ -591,9 +586,9 @@ LL_TYPE_INSTANCE_HOOK(
     if (portalBlocks.empty()) {
         portalBlocks = buildFallbackPortalBlocks(portalPos, candidate.stepX, candidate.stepZ);
     }
-    auto bottomLeft   = shape.mBottomLeftValid ? shape.mBottomLeft.get() : record.mBaseBlockPos.get();
-    int  width        = shape.mBottomLeftValid ? shape.mWidth : 2;
-    int  height       = shape.mBottomLeftValid ? shape.mHeight : 3;
+    auto bottomLeft = shape.mBottomLeftValid ? shape.mBottomLeft.get() : record.mBaseBlockPos.get();
+    int  width      = shape.mBottomLeftValid ? shape.mWidth : 2;
+    int  height     = shape.mBottomLeftValid ? shape.mHeight : 3;
 
     NetherPortalCreateAfterEvent afterEvent(
         const_cast<Actor&>(entity),
@@ -612,10 +607,7 @@ LL_TYPE_INSTANCE_HOOK(
     return record;
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    NetherPortalCreateBeforeEvent,
-    NetherPortalCreateAfterEvent,
-    NetherPortalCreateEventHook
-)
+CATALYST_HOOKED_EVENT_PAIR(NetherPortalCreateBeforeEvent, NetherPortalCreateAfterEvent, NetherPortalCreateEventHook)
 
 } // namespace Catalyst
+*/

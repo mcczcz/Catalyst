@@ -57,9 +57,13 @@ public:
     uchar                      srcSlot() const { return mSrcSlot; }
     FullContainerName const&   dstContainer() const { return mDstContainer; }
     uchar                      dstSlot() const { return mDstSlot; }
-    uchar                      amount() const { return mAmount; }
-    ItemStack const&           srcItem() const { return mSrcItem; }
-    ItemStack const&           dstItem() const { return mDstItem; }
+
+    // Take/Place 为请求数量，Swap 为交换前源堆叠数量。
+    uchar amount() const { return mAmount; }
+
+    // 源/目标物品均为当前动作执行前的快照。
+    ItemStack const& srcItem() const { return mSrcItem; }
+    ItemStack const& dstItem() const { return mDstItem; }
 
     ContainerScreenContext const& screenContext() const { return mScreenContext; }
 
@@ -85,6 +89,7 @@ public:
     using Cancellable::Cancellable;
 };
 
+// 单个动作处理成功后触发；整个请求仍可能在后续动作或最终提交时失败。
 class CATALYST_API PlayerItemTransferAfterEvent final : public PlayerItemTransferEvent {
 public:
     using PlayerItemTransferEvent::PlayerItemTransferEvent;
