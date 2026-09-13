@@ -1,48 +1,27 @@
-#if defined(__clang__)
-// The generated vector storage header requires this otherwise-unused type to be complete.
-struct NamedMolangScript {};
-#endif
-
 #include "MobTakeBlockEvent.h"
 
 #include <algorithm>
+#include <variant>
 
-#include "catalyst/event/ActorGameplayEventDispatch.h"
 #include "catalyst/event/EmitterRegistration.h"
+#include "ll/api/base/ScopedValue.h"
 #include "ll/api/event/EventBus.h"
+#include "ll/api/event/EventRefObjSerializer.h"
 #include "ll/api/memory/Hook.h"
-#include "mc/deps/core/math/Vec3.h"
 #include "mc/deps/ecs/WeakEntityRef.h"
-#include "mc/deps/ecs/gamerefs_entity/EntityContext.h"
-#include "mc/gameplayhandlers/CoordinatorResult.h"
-#include "mc/legacy/ActorUniqueID.h"
-#include "mc/network/packet/MobEquipmentPacket.h"
-#include "mc/network/packet/MobEquipmentPacketPayload.h"
+#include "mc/deps/nbt/CompoundTag.h"
 #include "mc/util/BlockUtils.h"
-#include "mc/util/IntRange.h"
-#include "mc/util/Random.h"
+#include "mc/util/NamedMolangScript.h"
 #include "mc/util/VariantParameterList.h"
-#include "mc/world/ContainerID.h"
 #include "mc/world/actor/ActorDefinitionDescriptor.h"
 #include "mc/world/actor/Mob.h"
 #include "mc/world/actor/ai/goal/TakeBlockGoal.h"
-#include "mc/world/events/ActorGameplayEvent.h"
-#include "mc/world/events/ActorGriefingBlockEvent.h"
-#include "mc/world/events/EventRef.h"
-#include "mc/world/events/gameevents/GameEventRegistry.h"
-#include "mc/world/item/ItemStack.h"
-#include "mc/world/level/BlockPos.h"
 #include "mc/world/level/BlockSource.h"
-#include "mc/world/level/ILevel.h"
 #include "mc/world/level/ShapeType.h"
 #include "mc/world/level/block/ActorChangeContext.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/block/BlockChangeContext.h"
 #include "mc/world/level/block/BlockDescriptor.h"
-#include "mc/world/level/dimension/Dimension.h"
-
-#include "mc/deps/nbt/CompoundTag.h"
-#include "ll/api/event/EventRefObjSerializer.h"
 
 namespace Catalyst {
 
@@ -54,103 +33,158 @@ void MobTakeBlockEvent::serialize(CompoundTag& nbt) const {
 
 namespace {
 
-int rollRange(Random& random, IntRange const& range) {
-    int value = range.rangeMin;
-    if (range.rangeMax > range.rangeMin) {
-        value += random.nextInt(range.rangeMax - range.rangeMin + 1);
-    }
-    return value;
-}
+enum class TakeBlockPhase {
+    Selecting,
+    Checking,
+    AwaitingRemoval,
+    Finished,
+};
+
+struct TakeBlockAttempt {
+    TakeBlockAttempt*    parent;
+    TakeBlockGoal&       goal;
+    Mob&                 mob;
+    BlockSource&         source;
+    WeakEntityRef        mobRef;
+    WeakRef<BlockSource> sourceRef;
+    BlockPos             pos{};
+    Block const*         block     = nullptr;
+    TakeBlockPhase       phase     = TakeBlockPhase::Selecting;
+    bool                 removed   = false;
+    bool                 triggered = false;
+};
+
+thread_local TakeBlockAttempt* currentTakeBlockAttempt = nullptr;
 
 } // namespace
 
+LL_TYPE_INSTANCE_HOOK(TakeBlockGoalTickHook, HookPriority::Normal, TakeBlockGoal, &TakeBlockGoal::$tick, void) {
+    Mob& mob = mMob;
+    for (auto* attempt = currentTakeBlockAttempt; attempt; attempt = attempt->parent) {
+        // Before 监听器重入同一生物时，不能绕过尚未确定的取消结果。
+        if (&attempt->mob == &mob) {
+            return;
+        }
+    }
+
+    auto& source = mob.getDimensionBlockSource();
+    TakeBlockAttempt
+        attempt{currentTakeBlockAttempt, *this, mob, source, mob.getEntityContext().getWeakRef(), source.getWeakRef()};
+    {
+        ll::ScopedValue scope(currentTakeBlockAttempt, &attempt);
+        // 保留原版随机选点、ActorGriefingBlockEvent、携带物/装备包和 mOnTake 的完整流程。
+        origin();
+    }
+
+    if (attempt.removed && attempt.triggered) {
+        if (auto currentMob = attempt.mobRef.tryUnwrap<Mob>()) {
+            MobTakeBlockAfterEvent afterEvent(*currentMob, attempt.pos, *attempt.block);
+            ll::event::EventBus::getInstance().publish(afterEvent);
+        }
+    }
+}
+
 LL_TYPE_INSTANCE_HOOK(
-    MobTakeBlockEventHook,
-    ll::memory::HookPriority::Normal,
-    TakeBlockGoal,
-    &TakeBlockGoal::$tick,
-    void
+    MobTakeBlockTargetHook,
+    HookPriority::Normal,
+    BlockSource,
+    &BlockSource::$getBlock,
+    Block const&,
+    BlockPos const& pos
 ) {
-    Mob&  mob    = this->mMob;
-    auto& random = mob.mLevel ? mob.mLevel->getThreadRandom() : Random::mThreadLocalRandom();
+    auto* attempt = currentTakeBlockAttempt;
+    if (!attempt || attempt->phase != TakeBlockPhase::Selecting || &attempt->source != this) {
+        return origin(pos);
+    }
 
-    BlockPos targetPos(mob.getPosition());
-    targetPos.x += rollRange(random, this->mXZRange);
-    targetPos.y += rollRange(random, this->mYRange);
-    targetPos.z += rollRange(random, this->mXZRange);
-
-    auto& blockSource = mob.getDimensionBlockSource();
-    auto& block       = blockSource.getBlock(targetPos);
+    // tick 的首次方块读取就是随机选中的目标；嵌套读取和监听器操作不再拦截。
+    attempt->phase    = TakeBlockPhase::Checking;
+    auto const& block = origin(pos);
     if (block.isAir()) {
-        return;
+        return block;
     }
 
-    auto const& validBlocks = this->mValidBlocks.get();
-    if (!validBlocks.empty()
-        && std::none_of(validBlocks.begin(), validBlocks.end(), [&](BlockDescriptor const& descriptor) {
-               return descriptor.matches(block);
-           })) {
-        return;
+    auto const& validBlocks = attempt->goal.mValidBlocks.get();
+    if (!validBlocks.empty() && std::none_of(validBlocks.begin(), validBlocks.end(), [&](auto const& descriptor) {
+            return descriptor.matches(block);
+        })) {
+        return block;
+    }
+    if (attempt->goal.mRequiresLineOfSight && !BlockUtils::canSee(attempt->mob, pos, ShapeType::Collision)) {
+        return block;
     }
 
-    if (this->mRequiresLineOfSight && !BlockUtils::canSee(mob, targetPos, ShapeType::Collision)) {
-        return;
+    auto air = Block::tryGetFromRegistry("minecraft:air");
+    if (!air) {
+        return block;
     }
 
-    auto& bus = ll::event::EventBus::getInstance();
+    attempt->pos   = pos;
+    attempt->block = &block;
+    MobTakeBlockBeforeEvent beforeEvent(attempt->mob, attempt->pos, block);
+    ll::event::EventBus::getInstance().publish(beforeEvent);
 
-    // 发布 BeforeEvent
-    MobTakeBlockBeforeEvent beforeEvent(mob, targetPos, block);
-    bus.publish(beforeEvent);
-    if (beforeEvent.isCancelled()) {
-        return;
+    auto source = attempt->sourceRef.lock();
+    if (beforeEvent.isCancelled() || !attempt->mobRef.tryUnwrap<Mob>() || !source
+        || &source->getBlock(attempt->pos) != &block) {
+        // 只替换本次读取的返回值，原版会在空气检查处退出，世界中的方块不受影响。
+        attempt->phase = TakeBlockPhase::Finished;
+        return *air;
     }
 
-    // 原版在此派发 ActorGriefingBlockEvent（脚本 API 可取消），handle 存活到函数结束。
-    BlockSourceHandleGuard blockSourceHandle(blockSource);
+    attempt->phase = TakeBlockPhase::AwaitingRemoval;
+    return block;
+}
 
-    ActorGriefingBlockEvent const griefingEvent{
-        mob.getEntityContext().getWeakRef(),
-        &block,
-        Vec3(static_cast<float>(targetPos.x), static_cast<float>(targetPos.y), static_cast<float>(targetPos.z)),
-        blockSourceHandle.get()
-    };
-    EventRef<ActorGameplayEvent<CoordinatorResult>> const eventRef(griefingEvent);
-    if (sendActorGameplayEvent(mob.getLevel(), eventRef) == CoordinatorResult::Cancel) {
-        return;
+LL_TYPE_INSTANCE_HOOK(
+    MobTakeBlockRemoveHook,
+    HookPriority::Normal,
+    BlockSource,
+    &BlockSource::$removeBlock,
+    bool,
+    BlockPos const&           pos,
+    BlockChangeContext const& context
+) {
+    auto*       attempt      = currentTakeBlockAttempt;
+    auto const* actorContext = std::get_if<ActorChangeContext>(&context.mContextSource.get());
+    if (!attempt || attempt->phase != TakeBlockPhase::AwaitingRemoval || &attempt->source != this || attempt->pos != pos
+        || !actorContext || actorContext->mActorContext != &attempt->mob || &getBlock(pos) != attempt->block) {
+        return origin(pos, context);
     }
 
-    // 方块变为手持物并同步装备包（ItemStack(Block const&, int, CompoundTag const*) 已不再导出，reinit 与之等价）
-    ItemStack item;
-    item.reinit(block, 1);
-    mob.setCarriedItem(item);
-    MobEquipmentPacket packet(MobEquipmentPacketPayload(mob.getRuntimeID(), item, 0, 0, ContainerID::Inventory));
-    mob.getDimension().sendPacketForEntity(mob, packet, nullptr);
+    attempt->phase = TakeBlockPhase::Finished;
+    bool result    = origin(pos, context);
+    auto source    = attempt->sourceRef.lock();
+    // 原生事件取消或 removeBlock 被其他插件拦截时，不发布 After。
+    attempt->removed = result && source && source->getBlock(attempt->pos).isAir();
+    return result;
+}
 
-    // 移除方块
-    BlockChangeContext changeContext{};
-    changeContext.mContextSource = ActorChangeContext{&mob};
-    blockSource.removeBlock(targetPos, changeContext);
-    blockSource.postGameEvent(&mob, GameEventRegistry::blockDestroy(), targetPos, &block);
-
-    // 执行 on_take 触发器
-    VariantParameterList triggerParams{};
-    triggerParams.mSelf = &mob;
-    if (mob.mLevel && mob.mTargetId->rawID != -1) {
-        triggerParams.mTarget = mob.mLevel->fetchEntity(mob.mTargetId, false);
+LL_STATIC_HOOK(
+    MobTakeBlockTriggerHook,
+    HookPriority::Normal,
+    &ActorDefinitionDescriptor::executeTrigger,
+    bool,
+    Actor&                        actor,
+    ActorDefinitionTrigger const& trigger,
+    VariantParameterList const&   params
+) {
+    auto* attempt = currentTakeBlockAttempt;
+    if (attempt && attempt->phase == TakeBlockPhase::Finished && attempt->removed && &attempt->mob == &actor
+        && &attempt->goal.mOnTake.get() == &trigger && params.mBlock && *params.mBlock == attempt->pos) {
+        // 只有原版放行拿取后才执行 mOnTake；原生事件监听器自行移除方块不能算作拿取成功。
+        attempt->triggered = true;
     }
-    triggerParams.mBlock = &targetPos;
-    ActorDefinitionDescriptor::executeTrigger(mob, this->mOnTake, triggerParams);
-
-    // 发布 AfterEvent
-    MobTakeBlockAfterEvent afterEvent(mob, targetPos, block);
-    bus.publish(afterEvent);
+    return origin(actor, trigger, params);
 }
 
 CATALYST_HOOKED_EVENT_PAIR(
     MobTakeBlockBeforeEvent,
     MobTakeBlockAfterEvent,
-    MobTakeBlockEventHook
+    TakeBlockGoalTickHook,
+    MobTakeBlockTargetHook,
+    MobTakeBlockRemoveHook,
+    MobTakeBlockTriggerHook
 )
 
 } // namespace Catalyst

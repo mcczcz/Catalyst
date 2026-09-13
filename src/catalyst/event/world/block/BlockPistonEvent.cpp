@@ -1,7 +1,7 @@
 #include "BlockPistonEvent.h"
 
-#include "catalyst/mod/Gloabl.h"
 #include "catalyst/event/EmitterRegistration.h"
+#include "catalyst/mod/Gloabl.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
 #include "mc/world/level/BlockSource.h"
@@ -11,6 +11,7 @@
 #include "mc/world/level/block/actor/PistonState.h"
 #include "mc/world/level/dimension/Dimension.h"
 #include "mc/world/redstone/circuit/CircuitSystem.h"
+#include "mc/world/redstone/circuit/components/BaseCircuitComponent.h"
 
 
 #include "mc/deps/nbt/CompoundTag.h"
@@ -22,6 +23,16 @@ void BlockPistonEvent::serialize(CompoundTag& nbt) const {
     nbt["pos"]       = ListTag{pos().x, pos().y, pos().z};
     nbt["action"]    = magic_enum::enum_name(action());
     nbt["direction"] = direction();
+}
+
+int getPistonStrength(CircuitSystem const& circuit, BlockPos const& pos) {
+    // CircuitSystem::getStrength 已内联到 tick：只查正式组件表，已移除的组件不再提供信号。
+    auto const& components = circuit.mSceneGraph->mAllComponents;
+    auto        it         = components.find(pos);
+    if (it == components.end() || !it->second || it->second->mRemoved) {
+        return -1;
+    }
+    return it->second->getStrength();
 }
 
 
@@ -46,7 +57,7 @@ LL_TYPE_INSTANCE_HOOK(
     auto  state      = this->mState;
 
 
-    auto strength = circuit->getStrength(pos);
+    auto strength = getPistonStrength(*circuit, *pos);
     /*
         logger.debug(
             "活塞位置: ({}, {}, {}), 当前状态: {}, 新状态: {}, 信号强度: {}",
@@ -63,8 +74,10 @@ LL_TYPE_INSTANCE_HOOK(
         if (state == PistonState::Retracted && this->mNewState == PistonState::Retracted) {
             extending = true;
             logger.debug("活塞准备伸展 - 位置: ({}, {}, {})", pos->x, pos->y, pos->z);
-        } else if (state == PistonState::Expanded
-                   && static_cast<PistonStateEx>(this->mNewState) == PistonStateEx::RetractingCancelled) {
+        } else if (
+            state == PistonState::Expanded
+            && static_cast<PistonStateEx>(this->mNewState) == PistonStateEx::RetractingCancelled
+        ) {
             this->mNewState = PistonState::Expanded;
             logger.debug("重置活塞收缩取消状态");
         }
@@ -73,8 +86,10 @@ LL_TYPE_INSTANCE_HOOK(
         if (state == PistonState::Expanded && this->mNewState == PistonState::Expanded) {
             retracting = true;
             logger.debug("活塞准备收缩 - 位置: ({}, {}, {})", pos->x, pos->y, pos->z);
-        } else if (state == PistonState::Retracted
-                   && static_cast<PistonStateEx>(this->mNewState) == PistonStateEx::ExpandingCancelled) {
+        } else if (
+            state == PistonState::Retracted
+            && static_cast<PistonStateEx>(this->mNewState) == PistonStateEx::ExpandingCancelled
+        ) {
             this->mNewState = PistonState::Retracted;
             logger.debug("重置活塞伸展取消状态");
         }
@@ -126,10 +141,6 @@ LL_TYPE_INSTANCE_HOOK(
     }
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    BlockPistonBeforeEvent,
-    BlockPistonAfterEvent,
-    PistonBlockEventHook
-)
+CATALYST_HOOKED_EVENT_PAIR(BlockPistonBeforeEvent, BlockPistonAfterEvent, PistonBlockEventHook)
 
 } // namespace Catalyst

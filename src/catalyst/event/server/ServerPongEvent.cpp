@@ -8,16 +8,15 @@
 #include <string_view>
 #include <utility>
 
-#include "fmt/format.h"
 #include "catalyst/event/EmitterRegistration.h"
+#include "fmt/format.h"
 #include "ll/api/event/EventBus.h"
-#include "ll/api/event/EventRefObjSerializer.h"
 #include "ll/api/memory/Hook.h"
 #include "mc/deps/nbt/CompoundTag.h"
 #include "mc/deps/nbt/CompoundTagVariant.h"
 #include "mc/deps/raknet/DefaultMessageIDTypes.h"
 #include "mc/deps/raknet/RNS2_SendParameters.h"
-#include "mc/deps/raknet/RNS2_Windows_Linux_360.h"
+#include "mc/deps/raknet/RNS2_Windows.h"
 #include "mc/deps/raknet/SystemAddress.h"
 
 namespace {
@@ -26,7 +25,6 @@ using Catalyst::ServerPongAfterEvent;
 using Catalyst::ServerPongBeforeEvent;
 
 constexpr std::size_t kUnconnectedPongHeaderSize = 35;
-constexpr int         kCancelledSendResult       = 133;
 
 struct PongPayloadData {
     std::string              motd;
@@ -37,8 +35,10 @@ struct PongPayloadData {
     std::string              guid;
     std::string              levelName;
     std::string              gameMode;
+    std::string              joinable;
     std::uint16_t            localPort;
     std::uint16_t            localPortV6;
+    std::string              editorWorld;
     std::vector<std::string> other;
     std::string              ipAndPort;
 };
@@ -112,17 +112,19 @@ std::optional<PongPayloadData> parsePongPayload(std::string_view payload, std::s
     }
 
     PongPayloadData data{};
-    data.motd           = std::move(parts[1]);
+    data.motd            = std::move(parts[1]);
     data.protocolVersion = 0;
-    data.networkVersion = std::move(parts[3]);
-    data.playerCount    = 0;
-    data.maxPlayerCount = 0;
-    data.guid           = std::move(parts[6]);
-    data.levelName      = std::move(parts[7]);
-    data.gameMode       = std::move(parts[8]);
-    data.localPort      = 0;
-    data.localPortV6    = 0;
-    data.ipAndPort      = std::move(ipAndPort);
+    data.networkVersion  = std::move(parts[3]);
+    data.playerCount     = 0;
+    data.maxPlayerCount  = 0;
+    data.guid            = std::move(parts[6]);
+    data.levelName       = std::move(parts[7]);
+    data.gameMode        = std::move(parts[8]);
+    data.joinable        = std::move(parts[9]);
+    data.localPort       = 0;
+    data.localPortV6     = 0;
+    data.editorWorld     = std::move(parts[12]);
+    data.ipAndPort       = std::move(ipAndPort);
 
     if (parts[0] != "MCPE" || !parseInteger(parts[2], data.protocolVersion) || !parseInteger(parts[4], data.playerCount)
         || !parseInteger(parts[5], data.maxPlayerCount) || !parseUint16(parts[10], data.localPort)
@@ -137,9 +139,10 @@ std::optional<PongPayloadData> parsePongPayload(std::string_view payload, std::s
     return data;
 }
 
-std::string buildPayload(ServerPongBeforeEvent const& event) {
+std::string buildPayload(ServerPongBeforeEvent const& event, PongPayloadData const& original) {
+    // These announcement flags are not exposed by the event; retain their original values.
     std::string payload = fmt::format(
-        "MCPE;{};{};{};{};{};{};{};{};1;{};{};0;",
+        "MCPE;{};{};{};{};{};{};{};{};{};{};{};{};",
         event.motd(),
         event.protocolVersion(),
         event.networkVersion(),
@@ -148,8 +151,10 @@ std::string buildPayload(ServerPongBeforeEvent const& event) {
         event.guid(),
         event.levelName(),
         event.gameMode(),
+        original.joinable,
         event.localPort(),
-        event.localPortV6()
+        event.localPortV6(),
+        original.editorWorld
     );
 
     for (auto const& extra : event.other()) {
@@ -261,41 +266,44 @@ std::uint16_t ServerPongAfterEvent::port() const { return extractPort(mIpAndPort
 
 #ifdef LL_PLAT_S
 
-LL_TYPE_STATIC_HOOK(
+// macOS RNS2_Linux::Send uses the same RakNetSocket2::Send interface.
+// On Windows the concrete implementation is RNS2_Windows::$Send.
+LL_TYPE_INSTANCE_HOOK(
     ServerPongEventHook,
     ll::memory::HookPriority::Normal,
-    RakNet::RNS2_Windows_Linux_360,
-    &RakNet::RNS2_Windows_Linux_360::Send_Windows_Linux_360NoVDP,
+    RakNet::RNS2_Windows,
+    &RakNet::RNS2_Windows::$Send,
     int,
-    int                            rns2Socket,
     ::RakNet::RNS2_SendParameters* sendParameters,
     char const*                    file,
     uint                           line
 ) {
-    try {
-        if (
-            !sendParameters || !sendParameters->data || sendParameters->length < static_cast<int>(kUnconnectedPongHeaderSize)
+    std::optional<ServerPongBeforeEvent> beforeEvent;
+    std::string                          rebuiltPacket;
+
+    auto preparePacket = [&]() {
+        if (!sendParameters || !sendParameters->data
+            || sendParameters->length < static_cast<int>(kUnconnectedPongHeaderSize)
             || static_cast<unsigned char>(sendParameters->data[0])
-                != static_cast<unsigned char>(DefaultMessageIDTypes::UnconnectedPong)
-        ) {
-            return origin(rns2Socket, sendParameters, file, line);
+                   != static_cast<unsigned char>(DefaultMessageIDTypes::UnconnectedPong)) {
+            return false;
         }
 
-        auto const* data = reinterpret_cast<unsigned char const*>(sendParameters->data);
-        auto payloadSize = static_cast<std::size_t>((static_cast<unsigned int>(data[33]) << 8) | data[34]);
+        auto const* data        = reinterpret_cast<unsigned char const*>(sendParameters->data);
+        auto        payloadSize = static_cast<std::size_t>((static_cast<unsigned int>(data[33]) << 8) | data[34]);
         if (payloadSize != static_cast<std::size_t>(sendParameters->length) - kUnconnectedPongHeaderSize) {
-            return origin(rns2Socket, sendParameters, file, line);
+            return false;
         }
 
         std::string_view payloadView{sendParameters->data + kUnconnectedPongHeaderSize, payloadSize};
-        auto parsed = parsePongPayload(payloadView, systemAddressToString(sendParameters->systemAddress));
+        auto             parsed = parsePongPayload(payloadView, systemAddressToString(sendParameters->systemAddress));
         if (!parsed.has_value()) {
-            return origin(rns2Socket, sendParameters, file, line);
+            return false;
         }
 
         auto& bus = ll::event::EventBus::getInstance();
 
-        ServerPongBeforeEvent beforeEvent(
+        beforeEvent.emplace(
             std::move(parsed->motd),
             parsed->protocolVersion,
             std::move(parsed->networkVersion),
@@ -309,45 +317,64 @@ LL_TYPE_STATIC_HOOK(
             std::move(parsed->other),
             std::move(parsed->ipAndPort)
         );
-        bus.publish(beforeEvent);
-        if (beforeEvent.isCancelled()) {
-            return kCancelledSendResult;
+        bus.publish(*beforeEvent);
+        if (beforeEvent->isCancelled()) {
+            return true;
         }
 
-        auto rebuiltPayload = buildPayload(beforeEvent);
+        auto rebuiltPayload = buildPayload(*beforeEvent, *parsed);
         if (rebuiltPayload.size() > 0xFFFF) {
-            return origin(rns2Socket, sendParameters, file, line);
+            return false;
         }
 
-        std::string rebuiltPacket =
+        rebuiltPacket =
             buildPacket(std::string_view(sendParameters->data, kUnconnectedPongHeaderSize - 2), rebuiltPayload);
+        return true;
+    };
 
-        auto modifiedParams   = *sendParameters;
-        modifiedParams.data   = rebuiltPacket.data();
-        modifiedParams.length = static_cast<int>(rebuiltPacket.size());
-
-        int result = origin(rns2Socket, &modifiedParams, file, line);
-
-        ServerPongAfterEvent afterEvent(
-            beforeEvent.motd(),
-            beforeEvent.protocolVersion(),
-            beforeEvent.networkVersion(),
-            beforeEvent.playerCount(),
-            beforeEvent.maxPlayerCount(),
-            beforeEvent.guid(),
-            beforeEvent.levelName(),
-            beforeEvent.gameMode(),
-            beforeEvent.localPort(),
-            beforeEvent.localPortV6(),
-            beforeEvent.other(),
-            beforeEvent.ipAndPort()
-        );
-        bus.publish(afterEvent);
-
-        return result;
+    bool prepared = false;
+    try {
+        prepared = preparePacket();
     } catch (...) {
-        return origin(rns2Socket, sendParameters, file, line);
+        // Fall back only before attempting a send.
     }
+    if (!prepared) {
+        return origin(sendParameters, file, line);
+    }
+    if (beforeEvent->isCancelled()) {
+        // Send returns a byte count on success; consume the original datagram without sending it.
+        return sendParameters->length;
+    }
+
+    auto modifiedParams   = *sendParameters;
+    modifiedParams.data   = rebuiltPacket.data();
+    modifiedParams.length = static_cast<int>(rebuiltPacket.size());
+
+    int result = origin(&modifiedParams, file, line);
+    if (result != modifiedParams.length) {
+        return result;
+    }
+
+    try {
+        ServerPongAfterEvent afterEvent(
+            beforeEvent->motd(),
+            beforeEvent->protocolVersion(),
+            beforeEvent->networkVersion(),
+            beforeEvent->playerCount(),
+            beforeEvent->maxPlayerCount(),
+            beforeEvent->guid(),
+            beforeEvent->levelName(),
+            beforeEvent->gameMode(),
+            beforeEvent->localPort(),
+            beforeEvent->localPortV6(),
+            beforeEvent->other(),
+            beforeEvent->ipAndPort()
+        );
+        ll::event::EventBus::getInstance().publish(afterEvent);
+    } catch (...) {
+        // The datagram has already been sent; an After failure must not send it again.
+    }
+    return result;
 }
 
 CATALYST_HOOKED_EVENT_PAIR(ServerPongBeforeEvent, ServerPongAfterEvent, ServerPongEventHook)

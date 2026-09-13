@@ -100,7 +100,7 @@ bool tryIgniteTntOnHit(Actor& owner, BlockSource& region, BlockPos const& pos, B
     ignitedBlock->getBlockType().destroy(region, pos, *ignitedBlock, &owner);
 
     BlockChangeContext ctx;
-    auto const&        air = BlockTypeRegistry::get().getDefaultBlockState(BedrockBlockNames::Air());
+    auto const&        air = BlockTypeRegistry::mBlockTypeRegistry().mValue.getDefaultBlockState(BedrockBlockNames::Air());
     region.setBlock(pos, air, 3, nullptr, ctx);
     return true;
 }

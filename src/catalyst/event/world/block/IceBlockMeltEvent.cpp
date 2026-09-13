@@ -47,7 +47,7 @@ LL_STATIC_HOOK(
     auto const& sourceBlock = region.getBlock(pos);
     bool const  inNether    = region.getDimensionId() == VanillaDimensions::Nether();
 
-    auto&       registry     = BlockTypeRegistry::get();
+    auto&       registry     = BlockTypeRegistry::mBlockTypeRegistry().mValue;
     auto const& meltedBlock  = inNether ? registry.getDefaultBlockState(BedrockBlockNames::Air())
                                         : registry.getDefaultBlockState(VanillaBlockTypeIds::FlowingWater());
 

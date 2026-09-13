@@ -10,7 +10,7 @@
 #include "mc/world/item/ItemStack.h"
 
 #include "catalyst/Macros.h"
-
+/*
 class ExperienceOrb;
 
 namespace Catalyst {
@@ -75,3 +75,4 @@ public:
 };
 
 } // namespace Catalyst
+*/

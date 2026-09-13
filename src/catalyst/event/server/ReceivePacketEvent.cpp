@@ -126,10 +126,25 @@ LL_TYPE_INSTANCE_HOOK(
     return result;
 }
 */
-#include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/deps/nbt/CompoundTag.h"
+
 
 namespace Catalyst {
+
+namespace {
+
+Bedrock::Result<void> readPacketNoHeader(
+    Packet&                         packet,
+    ReadOnlyBinaryStream&           stream,
+    cereal::ReflectionCtx const&    reflection_ctx,
+    SubClientId const&              sub_id
+) {
+    packet.mSenderSubId = sub_id;
+    return packet.read(stream, reflection_ctx);
+}
+
+} // namespace
 
 void ReceivePacketEvent::serialize(CompoundTag& nbt) const {
     ll::event::Event::serialize(nbt);
@@ -179,7 +194,7 @@ LL_TYPE_INSTANCE_HOOK(
             Catalyst::logger.error("PacketReceiveEvent: Bad packet size: {}", packet_size);
             continue;
         }
-        if (auto result = packet->readNoHeader(read_stream, *network->mReflectionCtx, sub_client_id);
+        if (auto result = readPacketNoHeader(*packet, read_stream, *network->mReflectionCtx, sub_client_id);
             !result.Base::has_value()) {
             Catalyst::logger.error("PacketReceiveEvent: Bad packet!");
             continue;
@@ -199,10 +214,6 @@ LL_TYPE_INSTANCE_HOOK(
     }
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    ReceivePacketBeforeEvent,
-    ReceivePacketAfterEvent,
-    ReceivePacketEventHook
-)
+CATALYST_HOOKED_EVENT_PAIR(ReceivePacketBeforeEvent, ReceivePacketAfterEvent, ReceivePacketEventHook)
 
 } // namespace Catalyst

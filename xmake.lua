@@ -23,7 +23,7 @@ option("target_type")
 option_end()
 
 target("Catalyst") 
-    set_toolset("cxx", "C:/Program Files/LLVM/bin/clang-cl.exe")
+    set_toolchains("clang-cl")
     add_rules("@levibuildscript/linkrule")
     add_rules("@levibuildscript/modpacker")
     add_cxflags( "/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")

@@ -24,14 +24,20 @@ static ::Player* asPlayer(::Actor* actor) {
     }
     return nullptr;
 }
-
+static ::ItemStack toStack(::ItemStackBase const& base) {
+    ::ItemStack stack;
+    static_cast<::ItemStackBase&>(stack) = base;
+    return stack;
+}
 LL_TYPE_INSTANCE_HOOK(
     FrameItemChangePlaceHook,
     ll::memory::HookPriority::Normal,
     ItemFrameBlockActor,
     &ItemFrameBlockActor::setItem,
     void,
-    ::BlockSource& region, ::ItemInstance const& item, ::Actor* entitySource
+    ::BlockSource&        region,
+    ::ItemInstance const& item,
+    ::Actor*              entitySource
 ) {
     if (!entitySource) {
         origin(region, item, entitySource);
@@ -39,11 +45,11 @@ LL_TYPE_INSTANCE_HOOK(
     }
     auto& bus = ll::event::EventBus::getInstance();
 
-    ::ItemStack placedItem(item);
+    ::ItemStack placedItem = toStack(item);
 
     FrameItemChangeBeforeEvent beforeEvent(
         asPlayer(entitySource),
-        this->getPosition(),
+        this->mPosition.get(),
         FrameItemChangeEvent::Action::Place,
         placedItem,
         false
@@ -57,7 +63,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     FrameItemChangeAfterEvent afterEvent(
         asPlayer(entitySource),
-        this->getPosition(),
+        this->mPosition.get(),
         FrameItemChangeEvent::Action::Place,
         placedItem,
         false
@@ -71,7 +77,9 @@ LL_TYPE_INSTANCE_HOOK(
     ItemFrameBlockActor,
     &ItemFrameBlockActor::dropFramedItem,
     void,
-    ::BlockSource& region, bool dropItem, ::Actor* entitySource
+    ::BlockSource& region,
+    bool           dropItem,
+    ::Actor*       entitySource
 ) {
     if (!entitySource) {
         origin(region, dropItem, entitySource);
@@ -79,11 +87,11 @@ LL_TYPE_INSTANCE_HOOK(
     }
     auto& bus = ll::event::EventBus::getInstance();
 
-    ::ItemStack takenItem(this->getFramedItem());
+    ::ItemStack takenItem = toStack(this->mItem.get());
 
     FrameItemChangeBeforeEvent beforeEvent(
         asPlayer(entitySource),
-        this->getPosition(),
+        this->mPosition.get(),
         FrameItemChangeEvent::Action::Take,
         takenItem,
         dropItem
@@ -97,7 +105,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     FrameItemChangeAfterEvent afterEvent(
         asPlayer(entitySource),
-        this->getPosition(),
+        this->mPosition.get(),
         FrameItemChangeEvent::Action::Take,
         takenItem,
         dropItem

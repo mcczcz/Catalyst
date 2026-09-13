@@ -41,7 +41,10 @@ LL_TYPE_INSTANCE_HOOK(
     ShelfBlockActor,
     &ShelfBlockActor::_setItemInternal,
     void,
-    int slot, ::ItemStack const& item, bool isLoading, bool emitVibrations
+    int                slot,
+    ::ItemStack const& item,
+    bool               isLoading,
+    bool               emitVibrations
 ) {
     static_cast<void>(emitVibrations);
 
@@ -69,7 +72,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     auto& bus = ll::event::EventBus::getInstance();
 
-    ShelfItemChangeBeforeEvent beforeEvent(g_currentShelfUser, this->getPosition(), action, slot, beforeItem, item);
+    ShelfItemChangeBeforeEvent beforeEvent(g_currentShelfUser, this->mPosition.get(), action, slot, beforeItem, item);
     bus.publish(beforeEvent);
     if (beforeEvent.isCancelled()) {
         return;
@@ -77,7 +80,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     origin(slot, item, isLoading, emitVibrations);
 
-    ShelfItemChangeAfterEvent afterEvent(g_currentShelfUser, this->getPosition(), action, slot, beforeItem, item);
+    ShelfItemChangeAfterEvent afterEvent(g_currentShelfUser, this->mPosition.get(), action, slot, beforeItem, item);
     bus.publish(afterEvent);
 }
 

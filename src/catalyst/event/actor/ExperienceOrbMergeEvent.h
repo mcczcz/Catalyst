@@ -5,7 +5,7 @@
 #include "mc/world/actor/item/ExperienceOrb.h"
 
 #include "catalyst/Macros.h"
-
+/*
 namespace Catalyst {
 
 class CATALYST_API ExperienceOrbMergeEvent : public ll::event::entity::ActorEvent {
@@ -67,3 +67,4 @@ public:
 };
 
 } // namespace Catalyst
+*/

@@ -11,8 +11,9 @@
 #include "mc/world/inventory/transaction/InventorySourceType.h"
 #include "mc/world/inventory/transaction/InventoryTransaction.h"
 
-#include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/deps/nbt/CompoundTag.h"
+
 
 namespace Catalyst {
 
@@ -67,10 +68,12 @@ LL_TYPE_INSTANCE_HOOK(
             ContainerID::Inventory,
             InventorySource::InventorySourceFlags::NoFlag
         };
-        auto& actions = mTransaction->getActions(source);
-        if (actions.size() == 1) {
-            int              slot = actions[0].mSlot;
-            ItemStack const& item = player.mInventory->mInventory->getItem(slot);
+        auto const& actionsMap = mTransaction->mActions.get();
+        auto const  actionsIt  = actionsMap.find(source);
+        if (actionsIt != actionsMap.end() && actionsIt->second.size() == 1) {
+            auto const&      actions = actionsIt->second;
+            int              slot    = actions[0].mSlot;
+            ItemStack const& item    = player.mInventory->mInventory->getItem(slot);
 
             auto& bus = ll::event::EventBus::getInstance();
 
@@ -92,10 +95,6 @@ LL_TYPE_INSTANCE_HOOK(
     return origin(player, isSenderAuthority);
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    PlayerDropItemBeforeEvent,
-    PlayerDropItemAfterEvent,
-    PlayerDropItemEventHook2
-)
+CATALYST_HOOKED_EVENT_PAIR(PlayerDropItemBeforeEvent, PlayerDropItemAfterEvent, PlayerDropItemEventHook2)
 
 } // namespace Catalyst

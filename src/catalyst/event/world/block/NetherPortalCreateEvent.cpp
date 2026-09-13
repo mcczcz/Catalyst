@@ -337,7 +337,7 @@ static ::PortalAxis axisFromStep(int stepX, int stepZ) {
 }
 
 static void placeFallbackSupport(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
-    auto const& netherrack = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Netherrack(), true);
+    auto const& netherrack = ::BlockTypeRegistry::mBlockTypeRegistry().mValue.getDefaultBlockState(::VanillaBlockTypeIds::Netherrack(), true);
     int         depthX     = stepZ;
     int         depthZ     = -stepX;
 
@@ -361,8 +361,8 @@ static void placeFallbackSupport(::BlockSource& source, ::BlockPos const& innerB
 
 static void
 prepareForcedPlacementVolume(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
-    auto const& obsidian = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Obsidian(), true);
-    auto const& air      = ::BlockTypeRegistry::get().getDefaultBlockState(::BedrockBlockNames::Air(), false);
+    auto const& obsidian = ::BlockTypeRegistry::mBlockTypeRegistry().mValue.getDefaultBlockState(::VanillaBlockTypeIds::Obsidian(), true);
+    auto const& air      = ::BlockTypeRegistry::mBlockTypeRegistry().mValue.getDefaultBlockState(::BedrockBlockNames::Air(), false);
     int         depthX   = stepZ;
     int         depthZ   = -stepX;
 
@@ -386,8 +386,8 @@ prepareForcedPlacementVolume(::BlockSource& source, ::BlockPos const& innerBotto
 }
 
 static void placePortalBlocks(::BlockSource& source, ::BlockPos const& innerBottomLeft, int stepX, int stepZ) {
-    auto const& obsidian = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Obsidian(), true);
-    auto const& portal   = ::BlockTypeRegistry::get().getDefaultBlockState(::VanillaBlockTypeIds::Portal(), true);
+    auto const& obsidian = ::BlockTypeRegistry::mBlockTypeRegistry().mValue.getDefaultBlockState(::VanillaBlockTypeIds::Obsidian(), true);
+    auto const& portal   = ::BlockTypeRegistry::mBlockTypeRegistry().mValue.getDefaultBlockState(::VanillaBlockTypeIds::Portal(), true);
 
     auto        axis           = axisFromStep(stepX, stepZ);
     auto        portalWithAxis = portal.setState(::VanillaStates::PortalAxis(), static_cast<int>(axis));

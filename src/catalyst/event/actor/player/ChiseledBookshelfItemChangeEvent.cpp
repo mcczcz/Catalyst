@@ -23,13 +23,16 @@ LL_TYPE_INSTANCE_HOOK(
     ChiseledBookshelfBlock,
     &ChiseledBookshelfBlock::_setBook,
     void,
-    ::Player& player, ::ItemStack heldItem, ::ChiseledBookshelfBlockActor& bookshelfActor, int hitSlot
+    ::Player&                      player,
+    ::ItemStack                    heldItem,
+    ::ChiseledBookshelfBlockActor& bookshelfActor,
+    int                            hitSlot
 ) {
     auto& bus = ll::event::EventBus::getInstance();
 
     ChiseledBookshelfItemChangeBeforeEvent beforeEvent(
         player,
-        bookshelfActor.getPosition(),
+        bookshelfActor.mPosition.get(),
         ChiseledBookshelfItemChangeEvent::Action::Put,
         hitSlot,
         heldItem
@@ -43,7 +46,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     ChiseledBookshelfItemChangeAfterEvent afterEvent(
         player,
-        bookshelfActor.getPosition(),
+        bookshelfActor.mPosition.get(),
         ChiseledBookshelfItemChangeEvent::Action::Put,
         hitSlot,
         heldItem
@@ -51,13 +54,15 @@ LL_TYPE_INSTANCE_HOOK(
     bus.publish(afterEvent);
 }
 
-LL_TYPE_INSTANCE_HOOK(
+LL_TYPE_STATIC_HOOK(
     ChiseledBookshelfItemChangeTakeHook,
     ll::memory::HookPriority::Normal,
     ChiseledBookshelfBlock,
     &ChiseledBookshelfBlock::_retrieveBook,
     bool,
-    ::Player& player, ::ChiseledBookshelfBlockActor& bookshelfActor, int hitSlot
+    ::Player&                      player,
+    ::ChiseledBookshelfBlockActor& bookshelfActor,
+    int                            hitSlot
 ) {
     auto& bus = ll::event::EventBus::getInstance();
 
@@ -65,7 +70,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     ChiseledBookshelfItemChangeBeforeEvent beforeEvent(
         player,
-        bookshelfActor.getPosition(),
+        bookshelfActor.mPosition.get(),
         ChiseledBookshelfItemChangeEvent::Action::Take,
         hitSlot,
         takenItem
@@ -79,7 +84,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     ChiseledBookshelfItemChangeAfterEvent afterEvent(
         player,
-        bookshelfActor.getPosition(),
+        bookshelfActor.mPosition.get(),
         ChiseledBookshelfItemChangeEvent::Action::Take,
         hitSlot,
         takenItem

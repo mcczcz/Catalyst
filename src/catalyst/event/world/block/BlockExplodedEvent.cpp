@@ -9,7 +9,7 @@
 #include "mc/world/level/block/Block.h"
 
 #include "mc/deps/nbt/CompoundTag.h"
-
+/*
 namespace Catalyst {
 
 void BlockExplodedEvent::serialize(CompoundTag& nbt) const {
@@ -48,7 +48,7 @@ LL_TYPE_INSTANCE_HOOK(
         return origin();
     }
 
-    auto& bus = ll::event::EventBus::getInstance();
+    auto&                        bus = ll::event::EventBus::getInstance();
     std::unordered_set<BlockPos> replaced;
     for (const auto& pos : *affectedBlocks) {
         BlockExplodedBeforeEvent beforeEvent(*region, pos);
@@ -67,11 +67,7 @@ LL_TYPE_INSTANCE_HOOK(
     }
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    BlockExplodedBeforeEvent,
-    BlockExplodedAfterEvent,
-    BlockExplodedHook1,
-    BlockExplodedHook2
-)
+CATALYST_HOOKED_EVENT_PAIR(BlockExplodedBeforeEvent, BlockExplodedAfterEvent, BlockExplodedHook1, BlockExplodedHook2)
 
 } // namespace Catalyst
+*/

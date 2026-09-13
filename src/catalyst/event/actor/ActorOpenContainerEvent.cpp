@@ -196,7 +196,7 @@ LL_TYPE_INSTANCE_HOOK(
     Catalyst::ActorOpenContainerAfterEvent afterEvent(actor, Catalyst::ContainerType::EnderChest, blockActor);
     bus.publish(afterEvent);
 }
-
+/*
 LL_TYPE_INSTANCE_HOOK(
     FurnaceBlockActorStartOpenHook,
     ll::memory::HookPriority::Normal,
@@ -284,7 +284,7 @@ LL_TYPE_INSTANCE_HOOK(
         bus.publish(afterEvent);
     }
 }
-
+*/
 namespace Catalyst {
 
 CATALYST_HOOKED_EVENT_PAIR(
@@ -293,10 +293,7 @@ CATALYST_HOOKED_EVENT_PAIR(
     HopperBlockActorStartOpenHook,
     BarrelBlockActorStartOpenHook,
     ChestBlockActorStartOpenHook,
-    EnderChestContainerStartOpenHook,
-    FurnaceBlockActorStartOpenHook,
-    ShulkerBoxBlockActorStartOpenHook,
-    BrewingStandBlockActorStartOpenHook
+    EnderChestContainerStartOpenHook
 )
 
 } // namespace Catalyst

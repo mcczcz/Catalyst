@@ -5,7 +5,7 @@
 #include "mc/world/level/BlockPos.h"
 
 #include "catalyst/Macros.h"
-
+/*
 namespace Catalyst {
 
 class CATALYST_API BlockExplodedEvent : public ll::event::world::WorldEvent {
@@ -32,3 +32,4 @@ public:
 };
 
 } // namespace Catalyst
+*/
