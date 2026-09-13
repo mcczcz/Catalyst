@@ -83,7 +83,7 @@ void Catalyst::ActorOpenContainerEvent::serialize(CompoundTag& nbt) const {
     nbt["containerType"] = magic_enum::enum_name(containerType());
     nbt["blockActor"]    = ll::event::serializePtrObj(blockActor());
 }
-
+/*
 LL_TYPE_INSTANCE_HOOK(
     HopperBlockActorStartOpenHook,
     ll::memory::HookPriority::Normal,
@@ -118,7 +118,7 @@ LL_TYPE_INSTANCE_HOOK(
         bus.publish(afterEvent);
     }
 }
-
+*/
 LL_TYPE_INSTANCE_HOOK(
     BarrelBlockActorStartOpenHook,
     ll::memory::HookPriority::Normal,
@@ -290,7 +290,6 @@ namespace Catalyst {
 CATALYST_HOOKED_EVENT_PAIR(
     ActorOpenContainerBeforeEvent,
     ActorOpenContainerAfterEvent,
-    HopperBlockActorStartOpenHook,
     BarrelBlockActorStartOpenHook,
     ChestBlockActorStartOpenHook,
     EnderChestContainerStartOpenHook

@@ -7,7 +7,7 @@
 #include "catalyst/Macros.h"
 
 class Block;
-
+/*
 namespace Catalyst {
 
 class CATALYST_API IceBlockMeltEvent : public ll::event::world::WorldEvent {
@@ -49,3 +49,4 @@ public:
 };
 
 } // namespace Catalyst
+*/

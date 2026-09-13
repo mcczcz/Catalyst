@@ -2,11 +2,11 @@
 
 #include "ll/api/event/Cancellable.h"
 #include "ll/api/event/entity/MobEvent.h"
+#include "mc/world/level/BlockPos.h"
 
 #include "catalyst/Macros.h"
 
 class Block;
-class BlockPos;
 
 namespace Catalyst {
 
@@ -15,10 +15,7 @@ class CATALYST_API MobTakeBlockEvent : public ll::event::entity::MobEvent {
     Block const& mBlock;
 
 public:
-    MobTakeBlockEvent(Mob& mob, BlockPos const& pos, Block const& block)
-    : MobEvent(mob),
-      mPos(pos),
-      mBlock(block) {}
+    MobTakeBlockEvent(Mob& mob, BlockPos const& pos, Block const& block) : MobEvent(mob), mPos(pos), mBlock(block) {}
 
     void serialize(CompoundTag&) const override;
 
