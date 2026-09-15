@@ -1,5 +1,8 @@
 #include "MobTakeBlockEvent.h"
 
+#include <algorithm>
+#include <memory>
+
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/base/ScopedValue.h"
 #include "ll/api/event/EventBus.h"
@@ -7,6 +10,8 @@
 #include "ll/api/memory/Hook.h"
 #include "mc/deps/ecs/WeakEntityRef.h"
 #include "mc/deps/nbt/CompoundTag.h"
+#include "mc/gameplayhandlers/ActorGameplayHandler.h"
+#include "mc/gameplayhandlers/CoordinatorResult.h"
 #include "mc/legacy/ActorUniqueID.h"
 #include "mc/network/packet/MobEquipmentPacket.h"
 #include "mc/network/packet/MobEquipmentPacketPayload.h"
@@ -19,6 +24,11 @@
 #include "mc/world/actor/ActorDefinitionDescriptor.h"
 #include "mc/world/actor/Mob.h"
 #include "mc/world/actor/ai/goal/TakeBlockGoal.h"
+#include "mc/world/events/ActorEventCoordinator.h"
+#include "mc/world/events/ActorGameplayEvent.h"
+#include "mc/world/events/ActorGriefingBlockEvent.h"
+#include "mc/world/events/BlockSourceHandle.h"
+#include "mc/world/events/EventRef.h"
 #include "mc/world/events/gameevents/GameEventRegistry.h"
 #include "mc/world/item/ItemStack.h"
 #include "mc/world/level/BlockSource.h"
@@ -29,7 +39,6 @@
 #include "mc/world/level/block/BlockChangeContext.h"
 #include "mc/world/level/block/BlockDescriptor.h"
 #include "mc/world/level/dimension/Dimension.h"
-#include "mc/world/level/levelgen/feature/helpers/FeatureHelper.h"
 
 namespace Catalyst {
 
@@ -55,6 +64,29 @@ struct TakeBlockAttempt {
 };
 
 thread_local TakeBlockAttempt* currentTakeBlockAttempt = nullptr;
+
+class BlockSourceHandleGuard {
+    std::shared_ptr<BlockSourceHandle> mHandle = std::make_shared<BlockSourceHandle>();
+
+public:
+    explicit BlockSourceHandleGuard(BlockSource& source) {
+        mHandle->mSource = &source;
+        source.addListener(*mHandle);
+    }
+
+    ~BlockSourceHandleGuard() {
+        // onSourceDestroyed 会清空 mSource，避免回调销毁方块源后访问悬空指针。
+        if (auto* source = mHandle->mSource) {
+            source->removeListener(*mHandle);
+            mHandle->mSource = nullptr;
+        }
+    }
+
+    BlockSourceHandleGuard(BlockSourceHandleGuard const&)            = delete;
+    BlockSourceHandleGuard& operator=(BlockSourceHandleGuard const&) = delete;
+
+    std::shared_ptr<BlockSourceHandle> const& get() const { return mHandle; }
+};
 
 } // namespace
 
@@ -82,55 +114,100 @@ LL_TYPE_INSTANCE_HOOK(TakeBlockGoalTickHook, HookPriority::Normal, TakeBlockGoal
     }
 
     auto const& validBlocks = mValidBlocks.get();
-    // 原生列表交给 BDS 遍历；插件侧不按 sizeof(BlockDescriptor) 计算元素地址。
     // 空列表保持原版语义：允许任意非空气方块。
-    if (!validBlocks.empty() && !FeatureHelper::passesAllowList(block, validBlocks)) {
+    if (!validBlocks.empty()
+        && std::none_of(validBlocks.begin(), validBlocks.end(), [&](BlockDescriptor const& descriptor) {
+               return descriptor.matches(block);
+           })) {
         return;
     }
+
     if (mRequiresLineOfSight && !BlockUtils::canSee(mob, pos, ShapeType::Collision)) {
         return;
     }
 
     auto const mobRef = mob.getEntityContext().getWeakRef();
     auto&      bus    = ll::event::EventBus::getInstance();
+    // 回调可能移除目标组件，提前保存 onTake，之后不再读取 goal 成员。
+    auto const onTake = mOnTake.get();
 
-    // 用 Catalyst Before 事件替代原生 ActorGriefingBlockEvent 的取消入口。
-    // 直接在 tick 中发布，取消时不改变携带物或世界方块。
+    BlockSourceHandleGuard sourceHandle(source);
+    auto const             getCurrentMob = [&]() {
+        auto currentMob = mobRef.tryUnwrap<Mob>();
+        if (!currentMob || currentMob->mRemoved || sourceHandle.get()->mSource != &source
+            || &currentMob->getDimensionBlockSource() != &source) {
+            return decltype(currentMob){};
+        }
+        return currentMob;
+    };
+    auto const canTake = [&]() { return getCurrentMob() && &source.getBlock(pos) == &block; };
+
+    // 两种 Before 取消入口都必须在修改携带物、发送装备包和移除方块之前完成。
     MobTakeBlockBeforeEvent beforeEvent(mob, pos, block);
     bus.publish(beforeEvent);
-    if (beforeEvent.isCancelled()) {
+    if (beforeEvent.isCancelled() || !canTake()) {
         return;
     }
 
-    auto currentMob = mobRef.tryUnwrap<Mob>();
-    if (!currentMob || &currentMob->getDimensionBlockSource() != &source || &source.getBlock(pos) != &block) {
+    auto currentMob = getCurrentMob();
+    if (!currentMob->mLevel) {
+        return;
+    }
+    auto& coordinator = currentMob->mLevel->getActorEventCoordinator();
+    auto* handler     = coordinator.mActorGameplayHandler.get();
+    // 对应原版无 gameplay handler 时直接结束本次 tick 的分支。
+    if (!handler) {
         return;
     }
 
+    ActorGriefingBlockEvent const                         griefingEvent{mobRef, &block, Vec3(pos), sourceHandle.get()};
+    EventRef<ActorGameplayEvent<CoordinatorResult>> const eventRef(griefingEvent);
+    if (coordinator._processEvent(handler, eventRef.get()) == CoordinatorResult::Cancel || !canTake()) {
+        return;
+    }
+
+    currentMob = getCurrentMob();
     ItemStack carriedBlock;
     carriedBlock.reinit(block, 1);
     currentMob->setCarriedItem(carriedBlock);
+    if (!canTake()) {
+        return;
+    }
+    currentMob = getCurrentMob();
     MobEquipmentPacket packet(
         MobEquipmentPacketPayload(currentMob->getRuntimeID(), carriedBlock, 0, 0, ContainerID::Inventory)
     );
     currentMob->getDimension().sendPacketForEntity(*currentMob, packet, nullptr);
+    if (!canTake()) {
+        return;
+    }
+    currentMob = getCurrentMob();
 
     BlockChangeContext changeContext{};
     changeContext.mContextSource = ActorChangeContext{&*currentMob};
-    bool const removed           = source.removeBlock(pos, changeContext) && source.getBlock(pos).isAir();
+    bool const removeSucceeded   = source.removeBlock(pos, changeContext);
+    currentMob                   = getCurrentMob();
+    if (!currentMob) {
+        return;
+    }
+    bool const removed = removeSucceeded && source.getBlock(pos).isAir();
     source.postGameEvent(&*currentMob, GameEventRegistry::blockDestroy(), pos, &block);
 
+    currentMob = getCurrentMob();
+    if (!currentMob) {
+        return;
+    }
     VariantParameterList triggerParams{};
     triggerParams.mSelf = &*currentMob;
     if (currentMob->mLevel && currentMob->mTargetId->rawID != -1) {
         triggerParams.mTarget = currentMob->mLevel->fetchEntity(currentMob->mTargetId, false);
     }
     triggerParams.mBlock = &pos;
-    ActorDefinitionDescriptor::executeTrigger(*currentMob, mOnTake, triggerParams);
+    ActorDefinitionDescriptor::executeTrigger(*currentMob, onTake, triggerParams);
 
     // onTake 可能移除实体；After 只报告实际完成的方块移除。
     if (removed) {
-        if (auto afterMob = mobRef.tryUnwrap<Mob>()) {
+        if (auto afterMob = mobRef.tryUnwrap<Mob>(); afterMob && !afterMob->mRemoved) {
             MobTakeBlockAfterEvent afterEvent(*afterMob, pos, block);
             bus.publish(afterEvent);
         }
