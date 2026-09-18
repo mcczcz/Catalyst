@@ -73,7 +73,7 @@ LL_TYPE_INSTANCE_HOOK(
         if (actionsIt != actionsMap.end() && actionsIt->second.size() == 1) {
             auto const&      actions = actionsIt->second;
             int              slot    = actions[0].mSlot;
-            ItemStack const& item    = player.mInventory->mInventory->getItem(slot);
+            ItemStack        item    = player.mInventory->mInventory->getItem(slot);
 
             auto& bus = ll::event::EventBus::getInstance();
 
