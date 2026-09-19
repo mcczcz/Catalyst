@@ -32,7 +32,7 @@ int rollRadius(Core::Random& snapshot, IntRange const& range) {
     int const min = range.rangeMin;
     int const max = range.rangeMax;
     if (min >= max - 1) return min;
-    return min + static_cast<int>(snapshot._genRandInt32() % static_cast<uint>(max - min));
+    return min + static_cast<int>(snapshot._genRandInt32(false) % static_cast<uint>(max - min));
 }
 
 } // namespace

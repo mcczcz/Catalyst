@@ -11,7 +11,6 @@
 #include "mc/entity/components/ActorRotationComponent.h"
 #include "mc/entity/components_json_legacy/OnHitSubcomponent.h"
 #include "mc/entity/components_json_legacy/ProjectileComponent.h"
-#include "mc/entity/components_json_legacy/ProjectileDescription.h"
 #include "mc/gameplayhandlers/CoordinatorResult.h"
 #include "mc/legacy/ActorUniqueID.h"
 #include "mc/world/actor/Actor.h"

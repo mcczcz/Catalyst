@@ -101,7 +101,7 @@ LL_TYPE_INSTANCE_HOOK(TakeBlockGoalTickHook, HookPriority::Normal, TakeBlockGoal
     TakeBlockAttempt attempt{currentTakeBlockAttempt, &mob};
     ll::ScopedValue  scope(currentTakeBlockAttempt, &attempt);
 
-    auto&    random = mob.mLevel ? mob.mLevel->getThreadRandom() : Random::mThreadLocalRandom();
+    auto&    random = mob.mLevel ? mob.mLevel->getThreadRandom() : Random::getThreadLocal();
     BlockPos pos(mob.getPosition());
     pos.x += rollRange(random, mXZRange);
     pos.y += rollRange(random, mYRange);
