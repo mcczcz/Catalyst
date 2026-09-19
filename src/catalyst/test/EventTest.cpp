@@ -3,6 +3,7 @@
 #include "catalyst/event/actor/MobPlaceBlockEvent.h"
 #include "catalyst/event/actor/MobTakeBlockEvent.h"
 #include "catalyst/event/actor/MobTotemResurrectEvent.h"
+#include "catalyst/event/actor/player/ChiseledBookshelfItemChangeEvent.h"
 #include "catalyst/event/actor/player/PlayerArmorStandSwapItemEvent.h"
 #include "catalyst/event/actor/player/PlayerAttackBlockEvent.h"
 #include "catalyst/event/actor/player/PlayerChangeDimensionEvent.h"
@@ -13,9 +14,11 @@
 #include "catalyst/event/actor/player/PlayerMendingRepairEvent.h"
 #include "catalyst/event/actor/player/PlayerOpenContainerEvent.h"
 #include "catalyst/event/actor/player/PlayerShieldBlockEvent.h"
+#include "catalyst/event/actor/player/PlayerStartSleepEvent.h"
 #include "catalyst/event/actor/player/PlayerUseFrameBlockEvent.h"
 
 
+#include "catalyst/event/world/ExplosionEvent.h"
 #include "fmt/format.h"
 
 
@@ -44,6 +47,29 @@ namespace Catalyst::Test {
 
 void registerEventTests() {
     auto& bus = ll::event::EventBus::getInstance();
+
+    bus.emplaceListener<PlayerStartSleepBeforeEvent>([](PlayerStartSleepBeforeEvent& event) {
+        auto const& pos = event.getBedBlockPos();
+        logger.info(
+            "PlayerStartSleepBeforeEvent: player={}, bedPos=({},{},{})",
+            event.self().getRealName(),
+            pos.x,
+            pos.y,
+            pos.z
+        );
+    });
+
+    bus.emplaceListener<PlayerStartSleepAfterEvent>([](PlayerStartSleepAfterEvent& event) {
+        auto const& pos = event.getBedBlockPos();
+        logger.info(
+            "PlayerStartSleepAfterEvent: player={}, bedPos=({},{},{}), result={}",
+            event.self().getRealName(),
+            pos.x,
+            pos.y,
+            pos.z,
+            magic_enum::enum_name(event.getResult())
+        );
+    });
 
     bus.emplaceListener<PlayerEditSignBeforeEvent>([](PlayerEditSignBeforeEvent& event) {
         logger.info(
@@ -202,6 +228,33 @@ void registerEventTests() {
             event.pos().z
         );
     });
+
+    bus.emplaceListener<ChiseledBookshelfItemChangeBeforeEvent>([](ChiseledBookshelfItemChangeBeforeEvent& event) {
+        logger.info(
+            "ChiseledBookshelfItemChangeBeforeEvent: player={}, pos=({},{},{}), action={}, slot={}, item={}",
+            event.self().getRealName(),
+            event.pos().x,
+            event.pos().y,
+            event.pos().z,
+            event.action() == ChiseledBookshelfItemChangeEvent::Action::Put ? "Put" : "Take",
+            event.slot(),
+            event.item().getTypeName()
+        );
+    });
+
+    bus.emplaceListener<ChiseledBookshelfItemChangeAfterEvent>([](ChiseledBookshelfItemChangeAfterEvent& event) {
+        logger.info(
+            "ChiseledBookshelfItemChangeAfterEvent: player={}, pos=({},{},{}), action={}, slot={}, item={}",
+            event.self().getRealName(),
+            event.pos().x,
+            event.pos().y,
+            event.pos().z,
+            event.action() == ChiseledBookshelfItemChangeEvent::Action::Put ? "Put" : "Take",
+            event.slot(),
+            event.item().getTypeName()
+        );
+    });
+    logger.info("ChiseledBookshelfItemChange test listeners registered (Before/After, Put/Take)");
 
     bus.emplaceListener<BlockPistonBeforeEvent>([](BlockPistonBeforeEvent& event) {
         logger.info(
@@ -571,6 +624,17 @@ void registerEventTests() {
             event.firePos().z,
             event.newAge(),
             event.sourceAge()
+        );
+    });
+    bus.emplaceListener<ExplosionBeforeEvent>([](ExplosionBeforeEvent& event) {
+        logger.debug(
+            "ExplosionBeforeEvent: pos=({:.1f},{:.1f},{:.1f}) radius={:.1f} fire={} break={}",
+            event.pos().x,
+            event.pos().y,
+            event.pos().z,
+            event.radius(),
+            event.fire(),
+            event.breaking()
         );
     });
 }
