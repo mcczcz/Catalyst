@@ -17,11 +17,22 @@ void ChiseledBookshelfItemChangeEvent::serialize(CompoundTag& nbt) const {
     nbt["item"]   = mItem.getTypeName();
 }
 
+// BDS 26.40 omits the unused `this` argument from _setBook's runtime ABI,
+// although the SDK still declares it as a member function. An instance hook
+// would read hitSlot in R9 as bookshelfActor, shifting every argument.
+#ifdef LL_PLAT_S
+LL_TYPE_STATIC_HOOK(
+    ChiseledBookshelfItemChangePutHook,
+    ll::memory::HookPriority::Normal,
+    ChiseledBookshelfBlock,
+    ll::memory::unchecked(&ChiseledBookshelfBlock::_setBook),
+#else
 LL_TYPE_INSTANCE_HOOK(
     ChiseledBookshelfItemChangePutHook,
     ll::memory::HookPriority::Normal,
     ChiseledBookshelfBlock,
     &ChiseledBookshelfBlock::_setBook,
+#endif
     void,
     ::Player&                      player,
     ::ItemStack                    heldItem,
