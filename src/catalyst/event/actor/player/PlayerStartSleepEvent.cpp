@@ -1,7 +1,6 @@
 #include "PlayerStartSleepEvent.h"
 
 #include "catalyst/event/EmitterRegistration.h"
-#include "catalyst/mod/Gloabl.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
 #include "mc/world/actor/player/Player.h"
@@ -32,18 +31,9 @@ LL_TYPE_INSTANCE_HOOK(
     bool              setsRespawn,
     float             sleepOffset
 ) {
-    auto& bus           = ll::event::EventBus::getInstance();
-    bool  canStartSleep = this->canStartSleepInBed();
-    if (!canStartSleep) {
-        return origin(bedBlockPos, setsRespawn, sleepOffset);
-    }
-    logger.debug(
-        "PlayerStartSleepEvent: player={}, bedPos=({},{},{})",
-        this->getRealName(),
-        bedBlockPos.x,
-        bedBlockPos.y,
-        bedBlockPos.z
-    );
+    auto& bus = ll::event::EventBus::getInstance();
+
+    // Let the original call determine the result without suppressing sleep attempt events.
     PlayerStartSleepBeforeEvent beforeEvent(*this, bedBlockPos);
     bus.publish(beforeEvent);
     if (beforeEvent.isCancelled()) {
