@@ -26,14 +26,13 @@ public:
     Block const& block() const { return mBlock; }
 };
 
-// 在带有实体来源的主方块层移除操作之前触发；取消后不执行本次破坏。
+// 处理原生 ActorGriefingBlockEvent 之前触发；取消后协调器返回 Cancel。
 class CATALYST_API ActorDestroyBlockBeforeEvent final : public ll::event::Cancellable<ActorDestroyBlockEvent> {
 public:
     using Cancellable::Cancellable;
 };
 
-// 仅在目标实际移除成功后触发，block() 是被破坏的旧方块。
-// 破门开始、失败、取消、放置及非空气方块之间的转换均不会触发。
+// 原生事件处理完成且未取消时触发，不代表方块已实际移除。
 class CATALYST_API ActorDestroyBlockAfterEvent final : public ActorDestroyBlockEvent {
 public:
     using ActorDestroyBlockEvent::ActorDestroyBlockEvent;
