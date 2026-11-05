@@ -55,7 +55,7 @@ jobs:
       - id: extract-release-notes
         uses: ffurrer2/extract-release-notes@v3
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           body: |
             ${{ steps.extract-release-notes.outputs.release_notes }}
@@ -91,7 +91,7 @@ jobs:
         run: |
           echo release=$(sha256sum ${{ github.event.repository.name }}-${{ matrix.target_type }}-windows-x64.zip | awk '{print $1}') >> $GITHUB_OUTPUT
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           append_body: true
           body: |
