@@ -4,6 +4,12 @@
 #include "ll/api/io/LogLevel.h"
 #include <nlohmann/json.hpp>
 
+#if defined(__clang__)
+#define BOOST_PFR_FUNCTION_SIGNATURE __PRETTY_FUNCTION__
+#define BOOST_PFR_CORE_NAME_PARSING                                                                                   \
+    (sizeof("auto boost::pfr::detail::name_of_field_impl() [MsvcWorkaround = ") - 1, sizeof("}]") - 1, backward("."))
+#endif
+
 #include <boost/pfr.hpp>
 #include <string_view>
 #include <type_traits>
@@ -59,4 +65,3 @@ struct adl_serializer<T> {
 };
 
 } // namespace nlohmann
-

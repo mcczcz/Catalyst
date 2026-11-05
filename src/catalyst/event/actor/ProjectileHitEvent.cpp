@@ -11,7 +11,6 @@
 #include "mc/entity/components/ActorRotationComponent.h"
 #include "mc/entity/components_json_legacy/OnHitSubcomponent.h"
 #include "mc/entity/components_json_legacy/ProjectileComponent.h"
-#include "mc/entity/components_json_legacy/ProjectileDescription.h"
 #include "mc/gameplayhandlers/CoordinatorResult.h"
 #include "mc/legacy/ActorUniqueID.h"
 #include "mc/world/actor/Actor.h"
@@ -38,7 +37,7 @@
 #include "mc/world/level/storage/GameRuleId.h"
 #include "mc/world/level/storage/GameRules.h"
 #include "mc/world/phys/HitResultType.h"
-
+/*
 namespace Catalyst {
 
 namespace {
@@ -100,7 +99,7 @@ bool tryIgniteTntOnHit(Actor& owner, BlockSource& region, BlockPos const& pos, B
     ignitedBlock->getBlockType().destroy(region, pos, *ignitedBlock, &owner);
 
     BlockChangeContext ctx;
-    auto const&        air = BlockTypeRegistry::get().getDefaultBlockState(BedrockBlockNames::Air());
+    auto const&        air = BlockTypeRegistry::mBlockTypeRegistry().mValue.getDefaultBlockState(BedrockBlockNames::Air());
     region.setBlock(pos, air, 3, nullptr, ctx);
     return true;
 }
@@ -185,9 +184,8 @@ void tryReflectHitProjectileOnHurt(Actor& owner, Actor* hitActor) {
 
     auto* sourceActor = owner.getLevel().fetchEntity(owner.getSourceUniqueID(), false);
     if (sourceActor != nullptr) {
-        ActorDamageByChildActorSource damageSource(owner, *sourceActor, SharedTypes::Legacy::ActorDamageCause::Projectile);
-        hitProjectile->_tryReflectOnHurt(*hitActor, damageSource);
-    } else {
+        ActorDamageByChildActorSource damageSource(owner, *sourceActor,
+SharedTypes::Legacy::ActorDamageCause::Projectile); hitProjectile->_tryReflectOnHurt(*hitActor, damageSource); } else {
         ActorDamageByActorSource damageSource(owner, SharedTypes::Legacy::ActorDamageCause::Projectile);
         hitProjectile->_tryReflectOnHurt(*hitActor, damageSource);
     }
@@ -292,3 +290,4 @@ CATALYST_HOOKED_EVENT_PAIR(
 
 } // namespace Catalyst
 
+*/

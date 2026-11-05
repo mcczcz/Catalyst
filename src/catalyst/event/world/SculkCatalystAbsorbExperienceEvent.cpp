@@ -3,10 +3,15 @@
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
+#include "mc/world/events/gameevents/GameEvent.h"
+#include "mc/world/events/gameevents/GameEventContext.h"
+#include "mc/world/events/gameevents/game_event_config/GameEventType.h"
+#include "mc/world/level/BlockSource.h"
 #include "mc/world/level/block/actor/SculkCatalystBlockActor.h"
 
-#include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/deps/nbt/CompoundTag.h"
+
 
 namespace Catalyst {
 
@@ -21,23 +26,31 @@ LL_TYPE_INSTANCE_HOOK(
     SculkCatalystAbsorbExperienceEventHook,
     ll::memory::HookPriority::Normal,
     SculkCatalystBlockActor,
-    &SculkCatalystBlockActor::_tryConsumeOnDeathExperience,
+    &SculkCatalystBlockActor::$handleGameEvent,
     void,
-    Level& level,
-    Actor& actor
+    GameEvent const&        gameEvent,
+    GameEventContext const& gameEventContext,
+    BlockSource&            region
 ) {
-    auto& bus = ll::event::EventBus::getInstance();
+    auto* actor = gameEventContext.mSource;
+    if (gameEvent.mType != GameEventConfig::GameEventType::EntityDie || actor == nullptr) {
+        origin(gameEvent, gameEventContext, region);
+        return;
+    }
 
-    SculkCatalystAbsorbExperienceBeforeEvent beforeEvent(*this, level, actor);
+    auto& bus   = ll::event::EventBus::getInstance();
+    auto& level = region.getLevel();
+
+    SculkCatalystAbsorbExperienceBeforeEvent beforeEvent(*this, level, *actor);
     bus.publish(beforeEvent);
 
     if (beforeEvent.isCancelled()) {
         return;
     }
 
-    origin(level, actor);
+    origin(gameEvent, gameEventContext, region);
 
-    SculkCatalystAbsorbExperienceAfterEvent afterEvent(*this, level, actor);
+    SculkCatalystAbsorbExperienceAfterEvent afterEvent(*this, level, *actor);
     bus.publish(afterEvent);
 }
 

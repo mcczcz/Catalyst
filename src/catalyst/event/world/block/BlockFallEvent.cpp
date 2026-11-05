@@ -102,7 +102,7 @@ LL_TYPE_INSTANCE_HOOK(
     changeContext.mContextSource = ActorChangeContext{actor};
 
     // 将原位置替换为空气方块
-    BlockTypeRegistry&  registry = BlockTypeRegistry::get();
+    BlockTypeRegistry&  registry = BlockTypeRegistry::mBlockTypeRegistry().mValue;
     const HashedString& airName  = BedrockBlockNames::Air();
     const Block&        airBlock = registry.getDefaultBlockState(airName, false);
     region.setBlock(pos, airBlock, 3, &syncMsg, changeContext);

@@ -1,10 +1,10 @@
 #include "PlayerStartSleepEvent.h"
 
-#include "catalyst/mod/Gloabl.h"
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
 #include "mc/world/actor/player/Player.h"
+
 
 #include "mc/deps/nbt/CompoundTag.h"
 
@@ -27,27 +27,20 @@ LL_TYPE_INSTANCE_HOOK(
     Player,
     &Player::$startSleepInBed,
     ::BedSleepingResult,
-    ::BlockPos const& bedBlockPos
+    ::BlockPos const& bedBlockPos,
+    bool              setsRespawn,
+    float             sleepOffset
 ) {
-    auto& bus           = ll::event::EventBus::getInstance();
-    bool  canStartSleep = this->canStartSleepInBed();
-    if (!canStartSleep) {
-        return origin(bedBlockPos);
-    }
-    logger.info(
-        "PlayerStartSleepEvent: player={}, bedPos=({},{},{})",
-        this->getRealName(),
-        bedBlockPos.x,
-        bedBlockPos.y,
-        bedBlockPos.z
-    );
+    auto& bus = ll::event::EventBus::getInstance();
+
+    // Let the original call determine the result without suppressing sleep attempt events.
     PlayerStartSleepBeforeEvent beforeEvent(*this, bedBlockPos);
     bus.publish(beforeEvent);
     if (beforeEvent.isCancelled()) {
         return BedSleepingResult::OtherProblem;
     }
 
-    BedSleepingResult result = origin(bedBlockPos);
+    BedSleepingResult result = origin(bedBlockPos, setsRespawn, sleepOffset);
 
     PlayerStartSleepAfterEvent afterEvent(*this, bedBlockPos, result);
     bus.publish(afterEvent);
@@ -55,10 +48,6 @@ LL_TYPE_INSTANCE_HOOK(
     return result;
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    PlayerStartSleepBeforeEvent,
-    PlayerStartSleepAfterEvent,
-    PlayerStartSleepEventHook
-)
+CATALYST_HOOKED_EVENT_PAIR(PlayerStartSleepBeforeEvent, PlayerStartSleepAfterEvent, PlayerStartSleepEventHook)
 
 } // namespace Catalyst

@@ -7,6 +7,7 @@
 #include "mc/world/actor/Actor.h"
 #include "mc/world/actor/Mob.h"
 #include "mc/world/level/Level.h"
+#include "mc/world/level/ActorDimensionTransferRequest.h"
 #include "mc\world\level\ActorDimensionTransferer.h"
 #include "mc/world/level/block/BlockType.h"
 #include "mc\world\level\BlockPalette.h"
@@ -25,12 +26,11 @@ LL_TYPE_INSTANCE_HOOK(
     Level,
     &Level::$entityChangeDimension,
     void,
-    class Actor&              entity,
-    DimensionType             toId,
-    std::optional<class Vec3> entityPos
+    class Actor&                              entity,
+    ActorDimensionTransferRequest const&     transferRequest
 ) {
     int fromId  = entity.getDimensionId();
-    int toIdInt = static_cast<int>(toId);
+    int toIdInt = static_cast<int>(transferRequest.mToId.get());
 
     auto& bus = ll::event::EventBus::getInstance();
 
@@ -40,7 +40,7 @@ LL_TYPE_INSTANCE_HOOK(
         return;
     }
 
-    origin(entity, toId, entityPos);
+    origin(entity, transferRequest);
 
     ActorChangeDimensionAfterEvent afterEvent(entity, fromId, toIdInt);
     bus.publish(afterEvent);

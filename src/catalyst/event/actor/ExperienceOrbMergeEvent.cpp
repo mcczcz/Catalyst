@@ -11,9 +11,11 @@
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/phys/AABB.h"
 
-#include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/deps/nbt/CompoundTag.h"
 #include "mc/world/actor/DataItem.h"
+
+/*
 namespace Catalyst {
 
 void ExperienceOrbMergeEvent::serialize(CompoundTag& nbt) const {
@@ -32,9 +34,7 @@ void ExperienceOrbMergeAfterEvent::serialize(CompoundTag& nbt) const {
     nbt["oldPickupCount"] = oldPickupCount();
     nbt["newPickupCount"] = newPickupCount();
 }
-int getOrbValue(ExperienceOrb& orb) {
-    return orb.mEntityData->getInt(static_cast<ushort>(ActorDataIDs::Value));
-}
+int getOrbValue(ExperienceOrb& orb) { return orb.mEntityData->getInt(static_cast<ushort>(ActorDataIDs::Value)); }
 
 LL_TYPE_INSTANCE_HOOK(
     ExperienceOrbMergeEventHook,
@@ -43,20 +43,13 @@ LL_TYPE_INSTANCE_HOOK(
     &ExperienceOrb::_tryMergeExistingOrbs,
     void
 ) {
-    auto& bus    = ll::event::EventBus::getInstance();
-    auto& region = this->getDimensionBlockSource();
-    auto  range  = this->getAABB().cloneAndGrow(Vec3{0.5f, 0.5f, 0.5f});
+    auto& bus       = ll::event::EventBus::getInstance();
+    auto& region    = this->getDimensionBlockSource();
+    auto  range     = this->getAABB().cloneAndGrow(Vec3{0.5f, 0.5f, 0.5f});
     int   selfValue = getOrbValue(*this);
     auto  selfId    = this->getOrCreateUniqueID();
 
-    auto xpOrbs = region.fetchEntities(
-        ActorType::Experience,
-        range,
-        this,
-        [](Actor*) {
-            return true;
-        }
-    );
+    auto xpOrbs = region.fetchEntities(ActorType::Experience, range, this, [](Actor*) { return true; });
 
     for (Actor* actor : xpOrbs) {
         if (!actor || actor->mRemoved) {
@@ -102,21 +95,12 @@ LL_TYPE_INSTANCE_HOOK(
         this->mAge               = std::min(this->mAge, otherOrb->mAge);
         otherOrb->remove();
 
-        ExperienceOrbMergeAfterEvent afterEvent(
-            *this,
-            *otherOrb,
-            selfValue,
-            oldPickupCount,
-            this->mRandomPickupValue
-        );
+        ExperienceOrbMergeAfterEvent afterEvent(*this, *otherOrb, selfValue, oldPickupCount, this->mRandomPickupValue);
         bus.publish(afterEvent);
     }
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    ExperienceOrbMergeBeforeEvent,
-    ExperienceOrbMergeAfterEvent,
-    ExperienceOrbMergeEventHook
-)
+CATALYST_HOOKED_EVENT_PAIR(ExperienceOrbMergeBeforeEvent, ExperienceOrbMergeAfterEvent, ExperienceOrbMergeEventHook)
 
 } // namespace Catalyst
+ */

@@ -11,7 +11,7 @@
 class ActorDamageSource;
 class ItemStack;
 class MobEffect;
-
+/*
 namespace Catalyst {
 
 struct MobTotemResurrectEffect {
@@ -77,3 +77,4 @@ public:
 };
 
 } // namespace Catalyst
+*/

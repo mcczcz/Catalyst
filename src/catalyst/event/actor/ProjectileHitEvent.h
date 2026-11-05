@@ -5,7 +5,7 @@
 
 #include "catalyst/Macros.h"
 #include "mc/world/phys/HitResult.h"
-
+/*
 namespace Catalyst {
 
 class CATALYST_API ProjectileHitEvent : public ll::event::entity::ActorEvent {
@@ -38,3 +38,4 @@ public:
 };
 
 } // namespace Catalyst
+*/

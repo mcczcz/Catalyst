@@ -26,11 +26,13 @@ public:
     Block const& block() const { return mBlock; }
 };
 
+// 处理原生 ActorGriefingBlockEvent 之前触发；取消后协调器返回 Cancel。
 class CATALYST_API ActorDestroyBlockBeforeEvent final : public ll::event::Cancellable<ActorDestroyBlockEvent> {
 public:
     using Cancellable::Cancellable;
 };
 
+// 原生事件处理完成且未取消时触发，不代表方块已实际移除。
 class CATALYST_API ActorDestroyBlockAfterEvent final : public ActorDestroyBlockEvent {
 public:
     using ActorDestroyBlockEvent::ActorDestroyBlockEvent;

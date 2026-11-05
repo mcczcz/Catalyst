@@ -3,16 +3,16 @@
 #include <algorithm>
 #include <optional>
 
-#include "mc/deps/shared_types/legacy/LevelEvent.h"
-#include "mc/deps/shared_types/legacy/actor/ActorDamageCause.h"
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
+#include "mc/deps/shared_types/legacy/LevelEvent.h"
+#include "mc/deps/shared_types/legacy/actor/ActorDamageCause.h"
 #include "mc/world/actor/ActorDamageSource.h"
 #include "mc/world/actor/ActorEvent.h"
 #include "mc/world/actor/Mob.h"
-#include "mc/world/attribute/AttributeInstanceForwarder.h"
 #include "mc/world/attribute/AttributeBuffType.h"
+#include "mc/world/attribute/AttributeInstanceForwarder.h"
 #include "mc/world/attribute/InstantaneousAttributeBuff.h"
 #include "mc/world/attribute/SharedAttributes.h"
 #include "mc/world/attribute/ValidMutableAttributeWithContext.h"
@@ -22,9 +22,11 @@
 #include "mc/world/item/ItemStack.h"
 #include "mc/world/level/Level.h"
 
-#include "mc/deps/nbt/CompoundTag.h"
-#include "ll/api/event/EventRefObjSerializer.h"
 
+#include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/deps/nbt/CompoundTag.h"
+
+/*
 namespace Catalyst {
 
 void MobTotemResurrectEvent::serialize(CompoundTag& nbt) const {
@@ -59,10 +61,8 @@ LL_TYPE_INSTANCE_HOOK(
     ::ActorDamageSource const& killingDamage
 ) {
     auto const damageCause = killingDamage.getCause();
-    if (
-        damageCause == SharedTypes::Legacy::ActorDamageCause::Void
-        || damageCause == SharedTypes::Legacy::ActorDamageCause::SelfDestruct
-    ) {
+    if (damageCause == SharedTypes::Legacy::ActorDamageCause::Void
+        || damageCause == SharedTypes::Legacy::ActorDamageCause::SelfDestruct) {
         return std::nullopt;
     }
 
@@ -90,15 +90,15 @@ LL_TYPE_INSTANCE_HOOK(
         return std::nullopt;
     }
 
-    auto const effectsToApply = beforeEvent.effects();
-    auto const& totem         = this->getEquippedTotem();
-    bool        hasTotem      = this->hasTotemEquipped();
+    auto const  effectsToApply = beforeEvent.effects();
+    auto const& totem          = this->getEquippedTotem();
+    bool        hasTotem       = this->hasTotemEquipped();
 
     std::optional<float> result;
     if (hasTotem) {
         // Restore health to exactly 1.0f, same behavior as vanilla totem protection path.
-        auto health = this->getValidMutableAttribute(SharedAttributes::HEALTH());
-        float const currentHealth = health->getCurrentValue();
+        auto                       health        = this->getValidMutableAttribute(SharedAttributes::HEALTH());
+        float const                currentHealth = health->getCurrentValue();
         InstantaneousAttributeBuff healthBuff(1.0f - currentHealth, AttributeBuffType::TotemOfUndying);
         result = health->addBuff(healthBuff);
 
@@ -142,10 +142,7 @@ LL_TYPE_INSTANCE_HOOK(
     return result;
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    MobTotemResurrectBeforeEvent,
-    MobTotemResurrectAfterEvent,
-    MobTotemResurrectHook
-)
+CATALYST_HOOKED_EVENT_PAIR(MobTotemResurrectBeforeEvent, MobTotemResurrectAfterEvent, MobTotemResurrectHook)
 
 } // namespace Catalyst
+*/

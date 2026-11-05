@@ -5,9 +5,9 @@ add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
 -- add_requires("levilamina develop") to use develop version
 -- please note that you should add bdslibrary yourself if using dev version
 if is_config("target_type", "server") then
-    add_requires("levilamina 26.20", {configs = {target_type = "server"}})
+    add_requires("levilamina 26.51.1", {configs = {target_type = "server"}})
 else
-    add_requires("levilamina 26.20", {configs = {target_type = "client"}})
+    add_requires("levilamina 26.40.6", {configs = {target_type = "client"}})
 end
 
 add_requires("levibuildscript")
@@ -23,6 +23,7 @@ option("target_type")
 option_end()
 
 target("Catalyst") 
+    set_toolchains("clang-cl")
     add_rules("@levibuildscript/linkrule")
     add_rules("@levibuildscript/modpacker")
     add_cxflags( "/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
@@ -31,11 +32,11 @@ target("Catalyst")
     set_exceptions("none") -- To avoid conflicts with /EHa.
     set_kind("shared")
     set_languages("c++20")
-    set_symbols("debug")
+    set_optimize("fast")
     add_headerfiles("src/(catalyst/**.h)")
     add_files("src/**.cpp")
     add_includedirs("src")
-    
+    set_symbols("debug")
     after_build(function (target)
         local lang_src = path.join(os.projectdir(), "lang")
         local lang_dst = path.join(os.projectdir(), "bin", target:name())

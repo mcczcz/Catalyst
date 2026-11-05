@@ -13,6 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install LLVM 22.1.8
+        shell: pwsh
+        run: |
+          choco upgrade llvm --version=22.1.8 --allow-downgrade -y --no-progress
+          & "C:\Program Files\LLVM\bin\clang-cl.exe" --version
+
       - uses: xmake-io/github-action-setup-xmake@v1
         # with:
         #   xmake-version: branch@master
@@ -32,7 +38,7 @@ jobs:
           xmake f -a x64 -m release -p windows -v --target_type=${{ matrix.target_type }} -y
 
       - run: |
-          xmake -v -y
+          xmake -j1 -v -y
 
       - uses: actions/upload-artifact@v5
         with:

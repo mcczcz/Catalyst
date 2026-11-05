@@ -2,11 +2,12 @@
 
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
+#include "ll/api/event/EventRefObjSerializer.h"
 #include "ll/api/memory/Hook.h"
+#include "mc/deps/nbt/CompoundTag.h"
 #include "mc/world/actor/Actor.h"
 #include "mc/world/effect/MobEffectInstance.h"
-#include "mc/deps/nbt/CompoundTag.h"
-#include "ll/api/event/EventRefObjSerializer.h"
+
 
 namespace Catalyst {
 
@@ -48,27 +49,6 @@ LL_TYPE_INSTANCE_HOOK(
     bus.publish(afterEvent);
 }
 
-LL_TYPE_INSTANCE_HOOK(
-    ActorEffectUpdateEventHook,
-    ll::memory::HookPriority::Normal,
-    Actor,
-    &Actor::onEffectUpdated,
-    void,
-    MobEffectInstance& effect
-) {
-    auto& bus = ll::event::EventBus::getInstance();
-
-    ActorEffectUpdateBeforeEvent beforeEvent(*this, effect);
-    bus.publish(beforeEvent);
-    if (beforeEvent.isCancelled()) {
-        return;
-    }
-
-    origin(effect);
-
-    ActorEffectUpdateAfterEvent afterEvent(*this, effect);
-    bus.publish(afterEvent);
-}
 
 LL_TYPE_INSTANCE_HOOK(
     ActorEffectRemoveEventHook,
@@ -93,7 +73,6 @@ LL_TYPE_INSTANCE_HOOK(
 }
 
 CATALYST_HOOKED_EVENT_PAIR(ActorEffectAddBeforeEvent, ActorEffectAddAfterEvent, ActorEffectAddEventHook)
-CATALYST_HOOKED_EVENT_PAIR(ActorEffectUpdateBeforeEvent, ActorEffectUpdateAfterEvent, ActorEffectUpdateEventHook)
 CATALYST_HOOKED_EVENT_PAIR(ActorEffectRemoveBeforeEvent, ActorEffectRemoveAfterEvent, ActorEffectRemoveEventHook)
 
 } // namespace Catalyst

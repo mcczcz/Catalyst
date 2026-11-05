@@ -12,10 +12,13 @@
 #include "mc/world/level/BlockPos.h"
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
+#include "mc/world/level/TickingQueueType.h"
 #include "mc/world/level/Weather.h"
 #include "mc/world/level/biome/Biome.h"
+#include "mc/world/level/block/BedrockBlockNames.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/block/BlockChangeContext.h"
+#include "mc/world/level/block/BlockProperty.h"
 #include "mc/world/level/block/BlockType.h"
 #include "mc/world/level/block/CampfireBlock.h"
 #include "mc/world/level/block/FireBlock.h"
@@ -80,14 +83,65 @@ static bool isBeehiveBlock(Block const& block) {
         || nameHash == VanillaBlockTypeIds::BeeNest().mStrHash;
 }
 
+static GameRuleId ruleId(GameRules::GameRulesIndex index) {
+    GameRuleId id;
+    id.mValue = static_cast<int>(index);
+    return id;
+}
+
+static void removeFire(BlockSource& region, BlockPos const& pos) {
+    BlockChangeContext ctx{};
+    region.removeBlock(pos, ctx);
+}
+
 static void tryAddFireToTickingQueue(
     FireBlock const& fireBlock,
     BlockSource&     region,
     BlockPos const&  pos,
     IRandom&         random
 ) {
-    if (!region.isInstaticking(pos) && !region.hasTickInPendingTicks(pos)) {
-        region.addToRandomTickingQueue(pos, fireBlock.getDefaultState(), random.nextInt(10) + 30, 0, false);
+    if (!region.isInstaticking(pos) && !region.hasTickInPendingTicks(pos, TickingQueueType::Internal)
+        && !region.hasTickInPendingTicks(pos, TickingQueueType::Random)) {
+        region.addToRandomTickingQueue(pos, *fireBlock.mDefaultState, random.nextInt(10) + 30, 0, false);
+    }
+}
+
+// 伪代码：方块带 InfiniburnBit 状态时取状态值，否则回退到 BlockProperty::InfiniBurn
+static bool isInfiniburnBlock(Block const& block) {
+    return block.getState<bool>(VanillaStates::InfiniburnBit())
+        .value_or(block.hasProperty(BlockProperty::InfiniBurn));
+}
+
+// 26.32 中 FireBlock::getFireOdds 已被内联进 tick：目标必须是空气，取六个相邻方块 mFlameOdds 的最大值
+static int getFireOdds(BlockSource& region, BlockPos const& pos) {
+    auto const& target = region.getBlock(pos);
+    if (target.mBlockType->mNameInfo->mFullName->mStrHash != BedrockBlockNames::Air().mStrHash) {
+        return 0;
+    }
+    auto flameOddsAt = [&](int x, int y, int z) {
+        return static_cast<ushort>(region.getBlock(BlockPos(x, y, z)).mDirectData->mFlameOdds);
+    };
+    ushort odds = flameOddsAt(pos.x + 1, pos.y, pos.z);
+    odds        = std::max(odds, flameOddsAt(pos.x - 1, pos.y, pos.z));
+    odds        = std::max(odds, flameOddsAt(pos.x, pos.y - 1, pos.z));
+    odds        = std::max(odds, flameOddsAt(pos.x, pos.y + 1, pos.z));
+    odds        = std::max(odds, flameOddsAt(pos.x, pos.y, pos.z - 1));
+    odds        = std::max(odds, flameOddsAt(pos.x, pos.y, pos.z + 1));
+    return odds;
+}
+
+// 伪代码按 difficulty - 1 查一张 3 项浮点表，Peaceful 越界取 0；
+// 表值已在带符号的二进制中确认为 {7, 14, 21}（40 在调用处单独相加）
+static float difficultyFlameBonus(SharedTypes::Legacy::Difficulty difficulty) {
+    switch (difficulty) {
+    case SharedTypes::Legacy::Difficulty::Easy:
+        return 7.0f;
+    case SharedTypes::Legacy::Difficulty::Normal:
+        return 14.0f;
+    case SharedTypes::Legacy::Difficulty::Hard:
+        return 21.0f;
+    default:
+        return 0.0f;
     }
 }
 
@@ -249,7 +303,7 @@ LL_TYPE_INSTANCE_HOOK(
     }
 }
 
-// tick hook: 按照原版逻辑重写
+// tick hook: 按照 26.32 版 FireBlock::tick 伪代码重写
 LL_TYPE_INSTANCE_HOOK(
     FireTickHook,
     ll::memory::HookPriority::Normal,
@@ -258,186 +312,116 @@ LL_TYPE_INSTANCE_HOOK(
     void,
     ::BlockEvents::BlockQueuedTickEvent& eventData
 ) {
-    auto& region     = eventData.mRegion;
-    auto& firePosRef = eventData.mPos;
-    auto& random     = eventData.mRandom;
-
-    BlockPos firePos(firePosRef.get().x, firePosRef.get().y, firePosRef.get().z);
+    auto&          region  = eventData.mRegion;
+    auto&          random  = eventData.mRandom;
+    BlockPos const firePos = eventData.mPos.get();
 
     // 尝试生成灵魂火
     if (_trySpawnSoulFire(region, firePos)) {
         return;
     }
 
-    // 检查火焰下方的方块
-    BlockPos belowPos(firePos.x, firePos.y - 1, firePos.z);
-    auto const& belowBlock = region.getBlock(belowPos);
-
-    // 检查是否为无限燃烧方块 (infiniburn)
-    auto infiniburnOpt = belowBlock.getState<bool>(VanillaStates::InfiniburnBit());
-    bool isInfiniburn  = infiniburnOpt.has_value() && infiniburnOpt.value();
+    // 检查火焰下方的方块是否为无限燃烧方块 (infiniburn)
+    BlockPos const belowPos(firePos.x, firePos.y - 1, firePos.z);
+    bool const     isInfiniburn = isInfiniburnBlock(region.getBlock(belowPos));
 
     // 检查火焰位置是否有效
     if (!mayPlace(region, firePos)) {
-        BlockChangeContext ctx{};
-        region.removeBlock(firePos, ctx);
+        removeFire(region, firePos);
         return;
     }
 
-    // 获取游戏规则
-    auto&      level     = region.getLevel();
-    auto&      gameRules = level.getGameRules();
-    GameRuleId doFireTickId;
-    doFireTickId.mValue = static_cast<int>(GameRules::GameRulesIndex::DoFireTick);
+    auto& level     = region.getLevel();
+    auto& gameRules = level.getGameRules();
 
-    if (!gameRules.getBool(doFireTickId, true)) {
+    if (!gameRules.getBool(ruleId(GameRules::GameRulesIndex::DoFireTick), false)) {
         tryAddFireToTickingQueue(*this, region, firePos, random);
         return;
     }
 
-    // 获取天气
-    auto& dimension = region.getDimension();
-    auto* weather   = dimension.mWeather.get();
+    // 26.32 新增：allowdestructiveobjects 为 false 时直接移除火焰
+    if (!gameRules.getBool(ruleId(GameRules::GameRulesIndex::AllowDestructiveObjects), true)) {
+        removeFire(region, firePos);
+        return;
+    }
 
-    // 雨水熄灭检查
-    if (weather && !isInfiniburn && dimension.mHasWeather && weather->mRainLevel > 0.2f) {
-        auto checkRainExtinguish = [&](BlockPos const& checkPos) -> bool {
-            if (weather->isPrecipitatingAt(region, checkPos)) {
-                auto const& biome = region.getBiome(checkPos);
-                if (biome.getTemperature(region, checkPos) > 0.15000001f) {
-                    return true;
-                }
+    auto& weather = *region.getDimension().mWeather;
+
+    auto isHotRainAt = [&](BlockPos const& pos) -> bool {
+        return weather.isPrecipitatingAt(region, pos) && region.getBiome(pos).getTemperature(region, pos) > 0.15f;
+    };
+    // 伪代码：mOldRainLevel + (mRainLevel - mOldRainLevel) > 0.2
+    auto isWeatherRaining = [&]() -> bool {
+        return weather.mDimension.mHasWeather
+            && (weather.mRainLevel - weather.mOldRainLevel) + weather.mOldRainLevel > 0.2f;
+    };
+
+    // 雨水熄灭检查：火焰位置及 ±x 用降水 + 温度判断，±z 用 isRainingAt
+    bool const rainOnFire = isHotRainAt(firePos) || isHotRainAt(BlockPos(firePos.x + 1, firePos.y, firePos.z))
+                         || isHotRainAt(BlockPos(firePos.x - 1, firePos.y, firePos.z))
+                         || weather.isRainingAt(region, BlockPos(firePos.x, firePos.y, firePos.z - 1))
+                         || weather.isRainingAt(region, BlockPos(firePos.x, firePos.y, firePos.z + 1));
+    if (!isInfiniburn && isWeatherRaining() && rainOnFire) {
+        removeFire(region, firePos);
+        return;
+    }
+
+    auto const& fireBlock     = region.getBlock(firePos);
+    int         age           = fireBlock.getState<int>(VanillaStates::Age()).value_or(0);
+    auto const  belowMaterial = region.getBlock(belowPos).mBlockType->mMaterial.mType;
+
+    // 非无限燃烧且 age < 15 时增加 age 并写回；之后 currentFire 即为世界中当前的火焰方块
+    Block const* currentFire = &fireBlock;
+    if (!isInfiniburn && age < 15) {
+        age += random.nextInt(3) / 2;
+        if (auto updated = fireBlock.setState<int>(VanillaStates::Age(), age)) {
+            currentFire = updated.as_ptr();
+        }
+        BlockChangeContext ctx{};
+        region.setBlock(firePos, *currentFire, 1, nullptr, ctx);
+    }
+
+    tryAddFireToTickingQueue(*this, region, firePos, random);
+
+    // 无限燃烧方块上的火焰跳过有效性检查，直接蔓延
+    if (!isInfiniburn) {
+        if (belowMaterial == SharedTypes::v1_26_20::MaterialType::Explosive
+            && !gameRules.getBool(ruleId(GameRules::GameRulesIndex::DoTntExplode), false)) {
+            if (age >= 4) {
+                removeFire(region, firePos);
             }
-            return false;
-        };
-
-        bool extinguishByRain = false;
-        if (checkRainExtinguish(firePos)) {
-            extinguishByRain = true;
-        } else if (checkRainExtinguish(BlockPos(firePos.x + 1, firePos.y, firePos.z))) {
-            extinguishByRain = true;
-        } else if (weather->isRainingAt(region, BlockPos(firePos.x - 1, firePos.y, firePos.z))) {
-            extinguishByRain = true;
-        } else if (weather->isRainingAt(region, BlockPos(firePos.x, firePos.y, firePos.z - 1))) {
-            extinguishByRain = true;
-        } else if (weather->isRainingAt(region, BlockPos(firePos.x, firePos.y, firePos.z + 1))) {
-            extinguishByRain = true;
+            return;
         }
 
-        if (extinguishByRain) {
-            BlockChangeContext ctx{};
-            region.removeBlock(firePos, ctx);
+        if (isValidFireLocation(region, firePos)
+            && region.getLiquidBlock(belowPos).mBlockType->mMaterial.mType
+                   != SharedTypes::v1_26_20::MaterialType::Water) {
+            auto const belowFlameOdds = static_cast<ushort>(region.getBlock(belowPos).mDirectData->mFlameOdds);
+            if (age == 15 && belowFlameOdds == 0 && random.nextInt(4) == 0) {
+                removeFire(region, firePos);
+                return;
+            }
+        } else {
+            bool const hasSupport = region.getBlock(belowPos).canProvideFullSupport(1);
+            if (age <= 3 && hasSupport) {
+                return;
+            }
+            removeFire(region, firePos);
             return;
         }
     }
 
-    // 获取当前火焰的 age
-    auto const& fireBlock = region.getBlock(firePos);
-    auto        ageOpt    = fireBlock.getState<int>(VanillaStates::Age());
-    int         age       = ageOpt.has_value() ? ageOpt.value() : 0;
-
-    // 获取下方方块的材质类型
-    auto belowMaterialType = belowBlock.mBlockType->mMaterial.mType;
-
-    // 获取 TNT 爆炸游戏规则
-    GameRuleId doTntExplodeId;
-    doTntExplodeId.mValue = static_cast<int>(GameRules::GameRulesIndex::DoTntExplode);
-
-    int newAge = age;
-
-    // 非无限燃烧方块，增加 age
-    if (!isInfiniburn && age < 15) {
-        newAge = age + random.nextInt(3) / 2;
-
-        auto newBlock = fireBlock.setState<int>(VanillaStates::Age(), newAge);
-        if (newBlock) {
-            BlockChangeContext ctx{};
-            region.setBlock(firePos, *newBlock, 1, nullptr, ctx);
-        }
-
-        tryAddFireToTickingQueue(*this, region, firePos, random);
-
-        // 进入 LABEL_45 逻辑 (有效性检查)
-        goto LABEL_45;
-    }
-
-    // 对于无限燃烧方块或 age >= 15
-    tryAddFireToTickingQueue(*this, region, firePos, random);
-
-    if (!isInfiniburn) {
-        // age >= 15 的情况
-        newAge = age;
-        goto LABEL_45;
-    }
-
-    // isInfiniburn 为 true，进入火焰蔓延逻辑 (LABEL_55)
-    goto LABEL_55;
-
-LABEL_45:
-    // 有效性检查逻辑
-    {
-        // TNT 材质检查
-        if (belowMaterialType == SharedTypes::v1_26_20::MaterialType::Explosive && !gameRules.getBool(doTntExplodeId, true)) {
-            // 材质是爆炸物且禁止TNT爆炸，跳过有效性检查
-            goto CHECK_AGE_REMOVE;
-        }
-
-        bool validLocation = isValidFireLocation(region, firePos);
-
-        if (validLocation) {
-            // 检查下方液体
-            BlockPos belowFirePos(firePos.x, firePos.y - 1, firePos.z);
-            auto const& liquidBelow = region.getLiquidBlock(belowFirePos);
-
-            if (liquidBelow.mBlockType->mMaterial.mType != SharedTypes::v1_26_20::MaterialType::Water) {
-                // 没有水，检查 flameOdds/age/random 条件
-                auto const& blockBelowFire = region.getBlock(belowFirePos);
-                auto        flameOdds      = static_cast<ushort>(blockBelowFire.mDirectData.get().mFlameOdds);
-
-                if (flameOdds == 0 && newAge == 15 && random.nextInt(4) == 0) {
-                    // 满足熄灭条件
-                    goto REMOVE_FIRE;
-                }
-
-                // 有效位置，没有水，通过检查 -> 进入火焰蔓延
-                goto LABEL_55;
-            }
-            // 有水，继续检查下方方块
-        }
-
-        // 无效位置或有水，检查下方是否为实心顶面方块
-        BlockPos belowFirePos(firePos.x, firePos.y - 1, firePos.z);
-        if (!region.getBlock(belowFirePos).canProvideFullSupport(1u)) {
-            goto REMOVE_FIRE;
-        }
-        // 有实心顶面，继续
-    }
-
-CHECK_AGE_REMOVE:
-    if (newAge <= 3) {
-        return; // 保留火焰，不蔓延
-    }
-
-REMOVE_FIRE:
-    {
-        BlockChangeContext ctx{};
-        region.removeBlock(firePos, ctx);
-        return;
-    }
-
-LABEL_55:
     // ============ 火焰蔓延逻辑 ============
 
-    auto const& biome  = region.getBiome(firePos);
-    bool        isHumid = biome.isHumid();
+    // 26.32 中 Biome::isHumid 已移除。伪代码优先读取生物群系的 CustomHumidityAttributes 组件，
+    // 但其 type_id 由 BDS 运行时分配、插件侧拿不到，这里只保留伪代码的兜底判断 mDownfall > 0.85
+    bool const isHumid = region.getBiome(firePos).mDownfall > 0.85f;
 
-    // 烧毁相邻方块的概率
-    int horizontalChance = isHumid ? 250 : 300;
-    int verticalChance   = isHumid ? 200 : 250;
+    int const humidPenalty     = isHumid ? 50 : 0;
+    int const horizontalChance = 300 - humidPenalty;
+    int const verticalChance   = 250 - humidPenalty;
 
-    auto& bus = ll::event::EventBus::getInstance();
-
-    // 检查6个相邻方块的烧毁 (checkBurn 会触发 FireBurnBlockEvent)
+    // 检查6个相邻方块的烧毁 (checkBurn 会触发 FireBurnBlockEvent)，传入的是更新后的 age
     checkBurn(region, BlockPos(firePos.x + 1, firePos.y, firePos.z), horizontalChance, random, age, firePos);
     checkBurn(region, BlockPos(firePos.x - 1, firePos.y, firePos.z), horizontalChance, random, age, firePos);
     checkBurn(region, BlockPos(firePos.x, firePos.y - 1, firePos.z), verticalChance, random, age, firePos);
@@ -445,96 +429,48 @@ LABEL_55:
     checkBurn(region, BlockPos(firePos.x, firePos.y, firePos.z - 1), horizontalChance, random, age, firePos);
     checkBurn(region, BlockPos(firePos.x, firePos.y, firePos.z + 1), horizontalChance, random, age, firePos);
 
-    // 火焰蔓延到周围方块
+    auto&       bus             = ll::event::EventBus::getInstance();
+    float const ageFactor       = static_cast<float>(age + 30);
+    float const difficultyBonus = difficultyFlameBonus(level.getDifficulty());
+
+    // 火焰蔓延到周围方块（循环顺序 dx -> dz -> dy 与伪代码一致，影响随机数消耗顺序）
     for (int dx = -1; dx <= 1; dx++) {
         for (int dz = -1; dz <= 1; dz++) {
             for (int dy = -1; dy <= 4; dy++) {
                 if (dx == 0 && dy == 0 && dz == 0) continue;
 
-                int heightMultiplier = 100;
-                if (dy > 1) heightMultiplier = 100 * dy;
+                BlockPos const testPos(firePos.x + dx, firePos.y + dy, firePos.z + dz);
+                int const      fireOdds = getFireOdds(region, testPos);
+                if (fireOdds == 0) continue;
 
-                BlockPos testPos(firePos.x + dx, firePos.y + dy, firePos.z + dz);
-                float    fireOdds = getFireOdds(region, testPos);
-
-                if (fireOdds <= 0.0f) continue;
-
-                // 难度修正
-                auto  difficulty      = level.getDifficulty();
-                float difficultyBonus = 0.0f;
-                switch (difficulty) {
-                case SharedTypes::Legacy::Difficulty::Easy:
-                    difficultyBonus = 47.0f;
-                    break;
-                case SharedTypes::Legacy::Difficulty::Normal:
-                    difficultyBonus = 54.0f;
-                    break;
-                case SharedTypes::Legacy::Difficulty::Hard:
-                    difficultyBonus = 61.0f;
-                    break;
-                default:
-                    break;
-                }
-
-                if (difficultyBonus == 0.0f) continue;
-
-                float spreadChance = (fireOdds + difficultyBonus) / static_cast<float>(age + 30);
+                float spreadChance = (static_cast<float>(fireOdds) + 40.0f + difficultyBonus) / ageFactor;
                 if (isHumid) spreadChance *= 0.5f;
-
                 if (spreadChance <= 0.0f) continue;
 
-                // 随机检查
-                float randVal =
-                    static_cast<float>(static_cast<uint>(random.nextInt())) * 2.328306436538696e-10f;
-                if (randVal * static_cast<float>(heightMultiplier) > spreadChance) continue;
+                // 伪代码里的 (double)(int)_genRandInt32() * 2^-32 是内联后的 nextFloat()/nextDouble()：
+                // 汇编为零扩展后再转换，即无符号、范围 [0, 1)，反编译显示的 (int) 是 Hex-Rays 的误差
+                float const heightMultiplier = dy >= 2 ? static_cast<float>(100 * dy) : 100.0f;
+                if (spreadChance < static_cast<float>(heightMultiplier * random.nextDouble())) continue;
 
-                // 雨水检查
-                bool rainBlocked = false;
-                if (weather) {
-                    auto checkRainSpread = [&](BlockPos const& checkPos) -> bool {
-                        if (weather->isPrecipitatingAt(region, checkPos)) {
-                            auto const& b = region.getBiome(checkPos);
-                            if (b.getTemperature(region, checkPos) > 0.15000001f) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    };
-
-                    if (checkRainSpread(testPos)
-                        || checkRainSpread(BlockPos(testPos.x - 1, testPos.y, testPos.z))
-                        || checkRainSpread(BlockPos(testPos.x + 1, testPos.y, testPos.z))
-                        || checkRainSpread(BlockPos(testPos.x, testPos.y, testPos.z - 1))
-                        || checkRainSpread(BlockPos(testPos.x, testPos.y, testPos.z + 1))) {
-                        rainBlocked = true;
-                    }
-                }
-
-                if (rainBlocked) continue;
-
-                // 计算新火焰的 age
-                int newFireAge = (std::min)(15, age + random.nextInt(5) / 4);
+                // 目标位置及四周下雨时不蔓延
+                bool const rainOnTarget = isHotRainAt(testPos)
+                                       || isHotRainAt(BlockPos(testPos.x - 1, testPos.y, testPos.z))
+                                       || isHotRainAt(BlockPos(testPos.x + 1, testPos.y, testPos.z))
+                                       || isHotRainAt(BlockPos(testPos.x, testPos.y, testPos.z - 1))
+                                       || isHotRainAt(BlockPos(testPos.x, testPos.y, testPos.z + 1));
+                if (rainOnTarget && isWeatherRaining()) continue;
 
                 // 发布火焰蔓延事件
-                FireSpreadBeforeEvent spreadBeforeEvent(region, testPos, firePos, newFireAge, age);
+                FireSpreadBeforeEvent spreadBeforeEvent(region, testPos, firePos, age, age);
                 bus.publish(spreadBeforeEvent);
-
                 if (spreadBeforeEvent.isCancelled()) continue;
 
-                // 放置新火焰
-                auto fireRef = Block::tryGetFromRegistry(std::string_view("minecraft:fire"));
-                if (fireRef) {
-                    auto newFireBlock = fireRef->setState<int>(VanillaStates::Age(), newFireAge);
-                    if (newFireBlock) {
-                        BlockChangeContext ctx{};
-                        region.setBlock(testPos, *newFireBlock, 1, nullptr, ctx);
-                        tryAddFireToTickingQueue(*this, region, testPos, random);
+                // 蔓延放置的是当前火焰方块本身（携带更新后的 age），updateFlags = 3
+                BlockChangeContext ctx{};
+                region.setBlock(testPos, *currentFire, 3, nullptr, ctx);
 
-                        // 发布 after 事件
-                        FireSpreadAfterEvent spreadAfterEvent(region, testPos, firePos, newFireAge, age);
-                        bus.publish(spreadAfterEvent);
-                    }
-                }
+                FireSpreadAfterEvent spreadAfterEvent(region, testPos, firePos, age, age);
+                bus.publish(spreadAfterEvent);
             }
         }
     }

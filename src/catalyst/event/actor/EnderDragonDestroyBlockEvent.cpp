@@ -6,13 +6,14 @@
 #include <exception>
 #include <memory>
 
-#include "catalyst/mod/Gloabl.h"
 #include "catalyst/event/EmitterRegistration.h"
+#include "catalyst/mod/Gloabl.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
 #include "mc/deps/core/math/Vec3.h"
 #include "mc/deps/core/string/HashedString.h"
 #include "mc/deps/shared_types/legacy/LevelEvent.h"
+#include "mc/deps/shared_types/v1_26_20/block/MaterialType.h"
 #include "mc/gameplayhandlers/CoordinatorResult.h"
 #include "mc/util/Random.h"
 #include "mc/world/events/ActorEventCoordinator.h"
@@ -29,12 +30,13 @@
 #include "mc/world/level/block/VanillaBlockTypeGroups.h"
 #include "mc/world/level/block/VanillaBlockTypeIds.h"
 #include "mc/world/level/material/Material.h"
-#include "mc/deps/shared_types/v1_26_20/block/MaterialType.h"
 #include "mc/world/level/storage/GameRuleId.h"
 #include "mc/world/level/storage/GameRules.h"
 
-#include "mc/deps/nbt/CompoundTag.h"
+
 #include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/deps/nbt/CompoundTag.h"
+
 
 namespace Catalyst {
 
@@ -93,9 +95,9 @@ bool isDragonImmuneBlock(uint64 blockNameHash) {
 }
 
 class BlockSourceHandleGuard {
-    BlockSource&                     mBlockSource;
+    BlockSource&                       mBlockSource;
     std::shared_ptr<BlockSourceHandle> mHandle;
-    bool                             mAttached;
+    bool                               mAttached;
 
 public:
     explicit BlockSourceHandleGuard(BlockSource& blockSource)
@@ -164,7 +166,8 @@ LL_TYPE_INSTANCE_HOOK(
                     }
 
                     auto const materialType = block.mBlockType->mMaterial.mType;
-                    if (materialType == SharedTypes::v1_26_20::MaterialType::Air || materialType == SharedTypes::v1_26_20::MaterialType::Fire) {
+                    if (materialType == SharedTypes::v1_26_20::MaterialType::Air
+                        || materialType == SharedTypes::v1_26_20::MaterialType::Fire) {
                         continue;
                     }
 
@@ -198,11 +201,13 @@ LL_TYPE_INSTANCE_HOOK(
                         using SendEventFunc = CoordinatorResult (ActorEventCoordinator::*)(
                             EventRef<ActorGameplayEvent<CoordinatorResult>> const&
                         );
+                        /*
                         if ((eventCoordinator.*static_cast<SendEventFunc>(&ActorEventCoordinator::sendEvent))(eventRef)
                             != CoordinatorResult::Continue) {
                             touchedIndestructibleOrCancelled = true;
                             continue;
                         }
+                            */
                     }
 
                     BlockChangeContext changeContext{};

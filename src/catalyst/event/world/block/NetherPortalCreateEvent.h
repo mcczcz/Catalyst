@@ -8,7 +8,7 @@
 #include "mc/world/level/PortalRecord.h"
 
 #include "catalyst/Macros.h"
-
+/*
 namespace Catalyst {
 
 class CATALYST_API NetherPortalCreateBeforeEvent final
@@ -104,3 +104,4 @@ public:
 using NetherPortalCreateEvent = NetherPortalCreateAfterEvent;
 
 } // namespace Catalyst
+*/

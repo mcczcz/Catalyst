@@ -19,12 +19,13 @@
 #include "mc/world/level/dimension/DimensionType.h"
 #include "mc/world/level/dimension/VanillaDimensions.h"
 
-#include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/deps/nbt/CompoundTag.h"
 #include <optional>
 
-namespace Catalyst {
 
+namespace Catalyst {
+/*
 void IceBlockMeltEvent::serialize(CompoundTag& nbt) const {
     ll::event::world::WorldEvent::serialize(nbt);
     nbt["pos"]         = ListTag{pos().x, pos().y, pos().z};
@@ -47,7 +48,7 @@ LL_STATIC_HOOK(
     auto const& sourceBlock = region.getBlock(pos);
     bool const  inNether    = region.getDimensionId() == VanillaDimensions::Nether();
 
-    auto&       registry     = BlockTypeRegistry::get();
+    auto&       registry     = BlockTypeRegistry::mBlockTypeRegistry().mValue;
     auto const& meltedBlock  = inNether ? registry.getDefaultBlockState(BedrockBlockNames::Air())
                                         : registry.getDefaultBlockState(VanillaBlockTypeIds::FlowingWater());
 
@@ -102,5 +103,5 @@ CATALYST_HOOKED_EVENT_PAIR(
     IceBlockMeltAfterEvent,
     IceBlockMeltHook
 )
-
+*/
 } // namespace Catalyst

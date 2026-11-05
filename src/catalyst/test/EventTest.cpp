@@ -3,6 +3,7 @@
 #include "catalyst/event/actor/MobPlaceBlockEvent.h"
 #include "catalyst/event/actor/MobTakeBlockEvent.h"
 #include "catalyst/event/actor/MobTotemResurrectEvent.h"
+#include "catalyst/event/actor/player/ChiseledBookshelfItemChangeEvent.h"
 #include "catalyst/event/actor/player/PlayerArmorStandSwapItemEvent.h"
 #include "catalyst/event/actor/player/PlayerAttackBlockEvent.h"
 #include "catalyst/event/actor/player/PlayerChangeDimensionEvent.h"
@@ -13,9 +14,11 @@
 #include "catalyst/event/actor/player/PlayerMendingRepairEvent.h"
 #include "catalyst/event/actor/player/PlayerOpenContainerEvent.h"
 #include "catalyst/event/actor/player/PlayerShieldBlockEvent.h"
+#include "catalyst/event/actor/player/PlayerStartSleepEvent.h"
 #include "catalyst/event/actor/player/PlayerUseFrameBlockEvent.h"
 
 
+#include "catalyst/event/world/ExplosionEvent.h"
 #include "fmt/format.h"
 
 
@@ -44,6 +47,29 @@ namespace Catalyst::Test {
 
 void registerEventTests() {
     auto& bus = ll::event::EventBus::getInstance();
+
+    bus.emplaceListener<PlayerStartSleepBeforeEvent>([](PlayerStartSleepBeforeEvent& event) {
+        auto const& pos = event.getBedBlockPos();
+        logger.info(
+            "PlayerStartSleepBeforeEvent: player={}, bedPos=({},{},{})",
+            event.self().getRealName(),
+            pos.x,
+            pos.y,
+            pos.z
+        );
+    });
+
+    bus.emplaceListener<PlayerStartSleepAfterEvent>([](PlayerStartSleepAfterEvent& event) {
+        auto const& pos = event.getBedBlockPos();
+        logger.info(
+            "PlayerStartSleepAfterEvent: player={}, bedPos=({},{},{}), result={}",
+            event.self().getRealName(),
+            pos.x,
+            pos.y,
+            pos.z,
+            magic_enum::enum_name(event.getResult())
+        );
+    });
 
     bus.emplaceListener<PlayerEditSignBeforeEvent>([](PlayerEditSignBeforeEvent& event) {
         logger.info(
@@ -161,65 +187,6 @@ void registerEventTests() {
         );
     });
 
-    bus.emplaceListener<PlayerMendingRepairBeforeEvent>([](PlayerMendingRepairBeforeEvent& event) {
-        auto containerName = [](ContainerID containerId) -> std::string_view {
-            switch (containerId) {
-            case ContainerID::Inventory:
-                return "Inventory";
-            case ContainerID::Offhand:
-                return "Offhand";
-            case ContainerID::Armor:
-                return "Armor";
-            default:
-                return "Unknown";
-            }
-        };
-
-        logger.info(
-            "PlayerMendingRepairBeforeEvent: player={}, item={}, damage={}=>{}, repair={}, orb={}=>{}, "
-            "container={}, slot={}, armorSlot={}",
-            event.self().getRealName(),
-            event.originalItem().getTypeName(),
-            event.originalItem().getDamageValue(),
-            event.repairedItem().getDamageValue(),
-            event.repairAmount(),
-            event.oldOrbValue(),
-            event.newOrbValue(),
-            containerName(event.containerId()),
-            event.slot(),
-            event.armorSlot() ? static_cast<int>(*event.armorSlot()) : -1
-        );
-    });
-
-    bus.emplaceListener<PlayerMendingRepairAfterEvent>([](PlayerMendingRepairAfterEvent& event) {
-        auto containerName = [](ContainerID containerId) -> std::string_view {
-            switch (containerId) {
-            case ContainerID::Inventory:
-                return "Inventory";
-            case ContainerID::Offhand:
-                return "Offhand";
-            case ContainerID::Armor:
-                return "Armor";
-            default:
-                return "Unknown";
-            }
-        };
-
-        logger.info(
-            "PlayerMendingRepairAfterEvent: player={}, item={}, damage={}=>{}, repair={}, orb={}=>{}, "
-            "container={}, slot={}, armorSlot={}",
-            event.self().getRealName(),
-            event.originalItem().getTypeName(),
-            event.originalItem().getDamageValue(),
-            event.repairedItem().getDamageValue(),
-            event.repairAmount(),
-            event.oldOrbValue(),
-            event.newOrbValue(),
-            containerName(event.containerId()),
-            event.slot(),
-            event.armorSlot() ? static_cast<int>(*event.armorSlot()) : -1
-        );
-    });
 
     bus.emplaceListener<PlayerShieldBlockBeforeEvent>([](PlayerShieldBlockBeforeEvent& event) {
         auto* damager = event.damager();
@@ -261,6 +228,33 @@ void registerEventTests() {
             event.pos().z
         );
     });
+
+    bus.emplaceListener<ChiseledBookshelfItemChangeBeforeEvent>([](ChiseledBookshelfItemChangeBeforeEvent& event) {
+        logger.info(
+            "ChiseledBookshelfItemChangeBeforeEvent: player={}, pos=({},{},{}), action={}, slot={}, item={}",
+            event.self().getRealName(),
+            event.pos().x,
+            event.pos().y,
+            event.pos().z,
+            event.action() == ChiseledBookshelfItemChangeEvent::Action::Put ? "Put" : "Take",
+            event.slot(),
+            event.item().getTypeName()
+        );
+    });
+
+    bus.emplaceListener<ChiseledBookshelfItemChangeAfterEvent>([](ChiseledBookshelfItemChangeAfterEvent& event) {
+        logger.info(
+            "ChiseledBookshelfItemChangeAfterEvent: player={}, pos=({},{},{}), action={}, slot={}, item={}",
+            event.self().getRealName(),
+            event.pos().x,
+            event.pos().y,
+            event.pos().z,
+            event.action() == ChiseledBookshelfItemChangeEvent::Action::Put ? "Put" : "Take",
+            event.slot(),
+            event.item().getTypeName()
+        );
+    });
+    logger.info("ChiseledBookshelfItemChange test listeners registered (Before/After, Put/Take)");
 
     bus.emplaceListener<BlockPistonBeforeEvent>([](BlockPistonBeforeEvent& event) {
         logger.info(
@@ -371,85 +365,6 @@ void registerEventTests() {
         );
     });
 
-    bus.emplaceListener<ExperienceOrbMergeBeforeEvent>([](ExperienceOrbMergeBeforeEvent& event) {
-        auto const& targetPos = event.targetOrb().getPosition();
-        logger.info(
-            "ExperienceOrbMergeBeforeEvent: pos=({:.2f},{:.2f},{:.2f}), value={}, mergedPickupCount={}",
-            targetPos.x,
-            targetPos.y,
-            targetPos.z,
-            event.value(),
-            event.mergedPickupCount()
-        );
-    });
-
-    bus.emplaceListener<ExperienceOrbMergeAfterEvent>([](ExperienceOrbMergeAfterEvent& event) {
-        auto const& targetPos = event.targetOrb().getPosition();
-        logger.info(
-            "ExperienceOrbMergeAfterEvent: pos=({:.2f},{:.2f},{:.2f}), value={}, oldPickup={}, newPickup={}",
-            targetPos.x,
-            targetPos.y,
-            targetPos.z,
-            event.value(),
-            event.oldPickupCount(),
-            event.newPickupCount()
-        );
-    });
-
-    bus.emplaceListener<MobTotemResurrectBeforeEvent>([](MobTotemResurrectBeforeEvent& event) {
-        auto const& pos = event.self().getPosition();
-        event.cancel();
-        logger.info(
-            "MobTotemResurrectBeforeEvent: mob={}, pos=({:.2f},{:.2f},{:.2f}), cause={}, hasTotem={}, effects={}",
-            event.self().getTypeName(),
-            pos.x,
-            pos.y,
-            pos.z,
-            static_cast<int>(event.killingDamage().mCause),
-            event.hasTotem(),
-            event.effects().size()
-        );
-
-        for (size_t i = 0; i < event.effects().size(); ++i) {
-            auto const& effect = event.effects()[i];
-            logger.info(
-                "MobTotemResurrectBeforeEvent.effect[{}]: effectPtr={}, durationTicks={}, amplifier={}, visible={}",
-                i,
-                static_cast<void*>(effect.effect),
-                effect.durationTicks,
-                effect.amplifier,
-                effect.visible
-            );
-        }
-    });
-
-    bus.emplaceListener<MobTotemResurrectAfterEvent>([](MobTotemResurrectAfterEvent& event) {
-        auto const& pos = event.self().getPosition();
-        logger.info(
-            "MobTotemResurrectAfterEvent: mob={}, pos=({:.2f},{:.2f},{:.2f}), cause={}, hasTotem={}, result={}, "
-            "effects={}",
-            event.self().getTypeName(),
-            pos.x,
-            pos.y,
-            pos.z,
-            static_cast<int>(event.killingDamage().mCause),
-            event.hasTotem(),
-            event.result(),
-            event.effects().size()
-        );
-
-        for (size_t i = 0; i < event.effects().size(); ++i) {
-            auto const& effect = event.effects()[i];
-            logger.info(
-                "MobTotemResurrectAfterEvent.effect[{}]: effectPtr={}, durationTicks={}, amplifier={}, visible={}",
-                i,
-                static_cast<void*>(effect.effect),
-                effect.durationTicks,
-                effect.amplifier,
-                effect.visible
-            );
-        }
-    });
     bus.emplaceListener<EnderDragonDestroyBlockBeforeEvent>([](EnderDragonDestroyBlockBeforeEvent& event) {
         logger.info(
             "EnderDragonDestroyBlockBeforeEvent: dragon={}, pos=({},{},{}), block={}",
@@ -473,14 +388,6 @@ void registerEventTests() {
         );
     });
 
-    bus.emplaceListener<BlockExplodedBeforeEvent>([](BlockExplodedBeforeEvent& event) {
-        logger.info("BlockExplodedBeforeEvent: pos=({},{},{})", event.pos().x, event.pos().y, event.pos().z);
-        event.cancel();
-    });
-
-    bus.emplaceListener<BlockExplodedAfterEvent>([](BlockExplodedAfterEvent& event) {
-        logger.info("BlockExplodedAfterEvent: pos=({},{},{})", event.pos().x, event.pos().y, event.pos().z);
-    });
 
     bus.emplaceListener<BlockFallBeforeEvent>([](BlockFallBeforeEvent& event) {
         auto& pos = event.pos();
@@ -719,34 +626,15 @@ void registerEventTests() {
             event.sourceAge()
         );
     });
-
-    bus.emplaceListener<IceBlockMeltBeforeEvent>([](IceBlockMeltBeforeEvent& event) {
-        logger.info(
-            "IceBlockMeltBeforeEvent: pos=({},{},{}), source={}, melted={}, inNether={}",
+    bus.emplaceListener<ExplosionBeforeEvent>([](ExplosionBeforeEvent& event) {
+        logger.debug(
+            "ExplosionBeforeEvent: pos=({:.1f},{:.1f},{:.1f}) radius={:.1f} fire={} break={}",
             event.pos().x,
             event.pos().y,
             event.pos().z,
-            event.sourceBlock().getTypeName(),
-            event.meltedBlock().getTypeName(),
-            event.isInNether()
-        );
-
-        // 测试拦截：在指定区域阻止冰块融化
-        if (event.pos().z >= -16 && event.pos().z <= 16) {
-            logger.warn("拦截冰块融化 - 测试保护区域");
-            event.cancel();
-        }
-    });
-
-    bus.emplaceListener<IceBlockMeltAfterEvent>([](IceBlockMeltAfterEvent& event) {
-        logger.info(
-            "IceBlockMeltAfterEvent: pos=({},{},{}), source={}, melted={}, inNether={}",
-            event.pos().x,
-            event.pos().y,
-            event.pos().z,
-            event.sourceBlock().getTypeName(),
-            event.meltedBlock().getTypeName(),
-            event.isInNether()
+            event.radius(),
+            event.fire(),
+            event.breaking()
         );
     });
 }

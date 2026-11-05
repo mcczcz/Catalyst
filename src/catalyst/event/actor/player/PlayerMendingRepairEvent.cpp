@@ -4,26 +4,28 @@
 #include <memory>
 #include <optional>
 
-#include "catalyst/mod/Gloabl.h"
 #include "catalyst/event/EmitterRegistration.h"
+#include "catalyst/mod/Gloabl.h"
 #include "ll/api/event/EventBus.h"
+#include "ll/api/event/EventRefObjSerializer.h"
 #include "ll/api/memory/Hook.h"
+#include "mc/deps/nbt/CompoundTag.h"
 #include "mc/entity/components/SynchedActorDataComponent.h"
 #include "mc/world/actor/ActorDataIDs.h"
 #include "mc/world/actor/DataItem.h"
 #include "mc/world/actor/item/ExperienceOrb.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/item/enchanting/EnchantUtils.h"
-#include "mc/deps/nbt/CompoundTag.h"
-#include "ll/api/event/EventRefObjSerializer.h"
 
+
+/*
 namespace Catalyst {
 
 void PlayerMendingRepairEvent::serialize(CompoundTag& nbt) const {
     ll::event::PlayerEvent::serialize(nbt);
-    nbt["orb"]          = ll::event::serializeRefObj(orb());
-    nbt["containerId"]  = (int)containerId();
-    nbt["slot"]         = slot();
+    nbt["orb"]         = ll::event::serializeRefObj(orb());
+    nbt["containerId"] = (int)containerId();
+    nbt["slot"]        = slot();
     if (armorSlot().has_value()) {
         nbt["armorSlot"] = magic_enum::enum_name(armorSlot().value());
     }
@@ -48,9 +50,9 @@ bool isSameStack(ItemStack const& lhs, ItemStack const& rhs) {
 }
 
 bool isRepairableMendingItem(ItemStack const& item) {
-    return item.mValid_DeprecatedSeeComment && !item.isNull()
-        && item.mCount > 0 && EnchantUtils::hasEnchant(Enchant::Type::Mending, item)
-        && item.isDamageableItem() && item.getDamageValue() > 0;
+    return item.mValid_DeprecatedSeeComment && !item.isNull() && item.mCount > 0
+        && EnchantUtils::hasEnchant(Enchant::Type::Mending, item) && item.isDamageableItem()
+        && item.getDamageValue() > 0;
 }
 
 std::optional<MendingTarget> resolveMendingTarget(Player& player, ItemStack const& targetItem) {
@@ -111,9 +113,7 @@ DataItem* getOrbValueDataItem(ExperienceOrb& orb) {
     return dataItem;
 }
 
-int getOrbValue(ExperienceOrb& orb) {
-    return orb.mEntityData->getInt(static_cast<ushort>(ActorDataIDs::Value));
-}
+int getOrbValue(ExperienceOrb& orb) { return orb.mEntityData->getInt(static_cast<ushort>(ActorDataIDs::Value)); }
 
 bool setOrbValue(ExperienceOrb& orb, DataItem& dataItem, int value) {
     auto* synchedActorData = orb.mEntityData->mData.get();
@@ -167,7 +167,7 @@ LL_TYPE_INSTANCE_HOOK(
     repairedItem.setDamageValue(static_cast<short>(std::max(0, oldDamage - repairAmount)));
 
     int   newOrbValue = std::max(0, oldOrbValue - repairAmount / 2);
-    auto& bus = ll::event::EventBus::getInstance();
+    auto& bus         = ll::event::EventBus::getInstance();
 
     PlayerMendingRepairBeforeEvent beforeEvent(
         player,
@@ -197,10 +197,8 @@ LL_TYPE_INSTANCE_HOOK(
         }
 
         ItemStack finalItem(*currentItem);
-        int finalRepairAmount = std::max(
-            0,
-            static_cast<int>(originalItem.getDamageValue()) - static_cast<int>(finalItem.getDamageValue())
-        );
+        int       finalRepairAmount =
+            std::max(0, static_cast<int>(originalItem.getDamageValue()) - static_cast<int>(finalItem.getDamageValue()));
         if (finalRepairAmount <= 0) {
             return;
         }
@@ -251,7 +249,7 @@ LL_TYPE_INSTANCE_HOOK(
     }
 
     ItemStack finalItem(*currentItem);
-    int finalRepairAmount =
+    int       finalRepairAmount =
         std::max(0, static_cast<int>(originalItem.getDamageValue()) - static_cast<int>(finalItem.getDamageValue()));
     if (finalRepairAmount <= 0) {
         return;
@@ -273,11 +271,7 @@ LL_TYPE_INSTANCE_HOOK(
     bus.publish(afterEvent);
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    PlayerMendingRepairBeforeEvent,
-    PlayerMendingRepairAfterEvent,
-    PlayerMendingRepairEventHook
-)
+CATALYST_HOOKED_EVENT_PAIR(PlayerMendingRepairBeforeEvent, PlayerMendingRepairAfterEvent, PlayerMendingRepairEventHook)
 
 } // namespace Catalyst
-
+*/

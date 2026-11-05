@@ -22,6 +22,18 @@
 
 #ifdef LL_PLAT_S
 
+#include <atomic>
+#include <cstring>
+#include <mutex>
+
+#include "ll/api/memory/Memory.h"
+#include "ll/api/memory/Signature.h"
+#include "mc/deps/json/Value.h"
+#include "mc/deps/nether_net/NetworkSession.h"
+#include "mc/external/webrtc/Candidate.h"
+#include "mc/external/webrtc/CandidatePairChangeEvent.h"
+#include "mc/external/webrtc/CandidatePairInterface.h"
+#include "mc/network/NetherNetConnector.h"
 #include "mc/deps/nbt/CompoundTag.h"
 #include "ll/api/event/EventRefObjSerializer.h"
 
@@ -72,6 +84,165 @@ static std::string getIPFromRakPeerUnsafe(RakNet::RakNetGUID const& guid) {
     return {};
 }
 
+namespace {
+
+// Native NetherNet layouts and the signature below were checked in the stripped
+// 26.51.9 server. See docs/client-login-nethernet.md before updating these offsets.
+constexpr size_t observerOffset       = 88;
+constexpr size_t peerObserverOffset   = 16;
+constexpr size_t dataChannelOffset    = 96;
+constexpr size_t sessionIdOffset      = 128;
+constexpr size_t selectedPairSlot     = 16;
+using SelectedPairCallback = void (*)(void*, webrtc::CandidatePairChangeEvent const&);
+
+template <class T>
+T readNativeField(void const* object, size_t offset) {
+    T value;
+    std::memcpy(&value, static_cast<std::byte const*>(object) + offset, sizeof(T));
+    return value;
+}
+
+struct NetherNetPeerAddress {
+    NetherNet::NetworkID remoteId;
+    uint64_t            sessionId;
+    uint64_t            generation;
+    std::string         ip;
+};
+
+std::mutex                                           peerAddressMutex;
+std::unordered_map<void*, NetherNetPeerAddress>        peerAddresses;
+std::unordered_map<void**, SelectedPairCallback>      observerCallbacks;
+uint64_t                                             nextPeerGeneration{};
+
+void onSelectedCandidatePairChanged(void* observer, webrtc::CandidatePairChangeEvent const& event) {
+    SelectedPairCallback original;
+    {
+        std::lock_guard lock(peerAddressMutex);
+        original = observerCallbacks.at(*static_cast<void***>(observer));
+    }
+
+    // The event owns a CandidatePairInterface at +32. Use its virtual accessor,
+    // rather than the SDK's unavailable CandidatePair method thunks.
+    auto const& pair = *reinterpret_cast<webrtc::CandidatePairInterface const*>(&event.mUnkc4ddb0);
+    auto const& address = pair.remote_candidate().address_;
+    if (!address->IsNil() && !address->IsAnyIP()) {
+        auto ip = address->ip_->ToString();
+        std::lock_guard lock(peerAddressMutex);
+        if (auto it = peerAddresses.find(observer); it != peerAddresses.end()) {
+            it->second.ip = std::move(ip);
+        }
+    }
+    original(observer, event);
+}
+
+void trackNetherNetSession(void* session, NetherNet::NetworkID const& remoteId) {
+    auto* nativeObserver = readNativeField<std::byte*>(session, observerOffset);
+    auto* dataChannel    = readNativeField<void*>(session, dataChannelOffset);
+    if (!nativeObserver || !dataChannel) return;
+
+    // The generated RefCountedObject base is incomplete: static_cast from the
+    // generated NetherNet observer would produce the wrong secondary base.
+    void* observer = nativeObserver + peerObserverOffset;
+    auto** table   = *static_cast<void***>(observer);
+    auto sessionId = readNativeField<uint64_t>(dataChannel, sessionIdOffset);
+    std::lock_guard lock(peerAddressMutex);
+    peerAddresses.insert_or_assign(
+        observer,
+        NetherNetPeerAddress{remoteId, sessionId, ++nextPeerGeneration, {}}
+    );
+    if (table[selectedPairSlot] != reinterpret_cast<void*>(&onSelectedCandidatePairChanged)) {
+        observerCallbacks.insert_or_assign(table, reinterpret_cast<SelectedPairCallback>(table[selectedPairSlot]));
+        // This slot normally points at a folded no-op shared by many callbacks.
+        // Patching only this table entry avoids detouring those other methods.
+        ll::memory::modify(table[selectedPairSlot], [](void*& slot) {
+            std::atomic_ref(slot).store(reinterpret_cast<void*>(&onSelectedCandidatePairChanged));
+        });
+    }
+}
+
+std::string getPeerIP(NetworkIdentifier const& source) {
+    switch (source.mType) {
+    case NetworkIdentifier::Type::RakNet:
+        return getIPFromRakPeerUnsafe(source.mGuid);
+    case NetworkIdentifier::Type::Address:
+    case NetworkIdentifier::Type::Address6:
+        return source.getAddress();
+    case NetworkIdentifier::Type::NetherNet: {
+        std::lock_guard lock(peerAddressMutex);
+        NetherNetPeerAddress const* latest = nullptr;
+        for (auto const& [observer, peer] : peerAddresses) {
+            if (peer.remoteId == source.mNetherNetId && (!latest || peer.generation > latest->generation)) {
+                latest = &peer;
+            }
+        }
+        return latest ? latest->ip : std::string{};
+    }
+    default:
+        return {};
+    }
+}
+
+// Destroy this AFTER HookRegistrar has removed the producers and resumed the
+// threads: taking our mutex while a thread holding it is suspended can deadlock.
+struct NetherNetAddressCleanup {
+    ~NetherNetAddressCleanup() {
+        std::lock_guard lock(peerAddressMutex);
+        for (auto const& [table, original] : observerCallbacks) {
+            if (table[selectedPairSlot] == reinterpret_cast<void*>(&onSelectedCandidatePairChanged)) {
+                ll::memory::modify(table[selectedPairSlot], [&](void*& slot) {
+                    std::atomic_ref(slot).store(reinterpret_cast<void*>(original));
+                });
+            }
+        }
+        // A callback already in flight may still need its original function.
+        // The tables belong to the executable, so retain these few pointers.
+        peerAddresses.clear();
+    }
+};
+
+using namespace ll::memory_literals;
+
+// NetworkSession::InitializeIncoming: the two native by-value aggregates are
+// passed indirectly on Win64. Forward their pointers without copying ownership.
+LL_STATIC_HOOK(
+    NetherNetIncomingAddressHook,
+    ll::memory::HookPriority::Normal,
+    "55 41 57 41 56 56 57 53 48 81 EC 48 02 00 00 48 8D AC 24 80 00 00 00 48 C7 85 C0 01 00 00 FE FF FF FF 4C 89 C6 48 89 CF 4C 8B 85 20 02 00 00 48 B8 00 00 00 00 01 00 00 00 48 89 41 30 0F 10 02 0F 11 41 40"_sig,
+    void,
+    void*                       session,
+    NetherNet::NetworkID const& remoteId,
+    void const*                 offer,
+    uint32_t                    preference,
+    void*                       identityGenerator
+) {
+    // Install before SetRemoteDescription starts ICE; the selected pair is
+    // delivered on the signaling thread before the login packet is received.
+    trackNetherNetSession(session, remoteId);
+    origin(session, remoteId, offer, preference, identityGenerator);
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    NetherNetCloseAddressHook,
+    ll::memory::HookPriority::Normal,
+    NetherNetConnector,
+    &NetherNetConnector::$OnSessionClose,
+    void,
+    NetherNet::NetworkID     remoteId,
+    uint64                  sessionId,
+    NetherNet::ESessionError error,
+    Json::Value             summary
+) {
+    {
+        std::lock_guard lock(peerAddressMutex);
+        std::erase_if(peerAddresses, [&](auto const& entry) {
+            return entry.second.remoteId == remoteId && entry.second.sessionId == sessionId;
+        });
+    }
+    origin(std::move(remoteId), sessionId, error, std::move(summary));
+}
+
+} // namespace
+
 // Before event hook - on $handle(LoginPacket)
 LL_TYPE_INSTANCE_HOOK(
     ClientLoginBeforeEventHook,
@@ -112,7 +283,7 @@ LL_TYPE_INSTANCE_HOOK(
     ClientLoginAfterEvent afterEvent(
         nullptr,
         std::string(playerInfo.XboxLiveName),
-        getIPFromRakPeerUnsafe(source.mGuid),
+        getPeerIP(source),
         std::string(playerInfo.Xuid),
         std::string(playerInfo.Xuid),
         playerInfo.AuthenticatedUuid,
@@ -128,7 +299,15 @@ LL_TYPE_INSTANCE_HOOK(
 }
 
 CATALYST_HOOKED_EMITTER(ClientLoginBeforeEvent, ClientLoginBeforeEventHook)
-CATALYST_HOOKED_EMITTER(ClientLoginAfterEvent, ClientLoginAfterEventHook)
+static std::unique_ptr<ll::event::EmitterBase> ClientLoginAfterEventEmitterFactory();
+class ClientLoginAfterEventEmitter final
+: public ll::event::Emitter<ClientLoginAfterEventEmitterFactory, ClientLoginAfterEvent> {
+    NetherNetAddressCleanup cleanup;
+    ll::memory::HookRegistrar<ClientLoginAfterEventHook, NetherNetIncomingAddressHook, NetherNetCloseAddressHook> hooks;
+};
+static std::unique_ptr<ll::event::EmitterBase> ClientLoginAfterEventEmitterFactory() {
+    return std::make_unique<ClientLoginAfterEventEmitter>();
+}
 
 // ClientLoginAfterEvent::disconnect implementation
 void ClientLoginAfterEvent::disconnect(std::string const& message) const {

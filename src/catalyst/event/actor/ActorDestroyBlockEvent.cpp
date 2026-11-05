@@ -1,18 +1,20 @@
 #include "ActorDestroyBlockEvent.h"
 
-#include "catalyst/mod/Gloabl.h"
+#include <type_traits>
+
 #include "catalyst/event/EmitterRegistration.h"
 #include "ll/api/event/EventBus.h"
+#include "ll/api/event/EventRefObjSerializer.h"
 #include "ll/api/memory/Hook.h"
-#include "mc/deps/ecs/gamerefs_entity/EntityContext.h"
-#include "mc/deps/game_refs/WeakRef.h"
-#include "mc/world/actor/Actor.h"
-#include "mc/world/events/ActorEventCoordinator.h"
+#include "mc/deps/ecs/WeakEntityRef.h"
+#include "mc/deps/nbt/CompoundTag.h"
+#include "mc/gameplayhandlers/ActorGameplayHandler.h"
+#include "mc/gameplayhandlers/CoordinatorResult.h"
+#include "mc/world/events/ActorEventListener.h"
 #include "mc/world/events/ActorGameplayEvent.h"
 #include "mc/world/events/ActorGriefingBlockEvent.h"
-
-#include "mc/deps/nbt/CompoundTag.h"
-#include "ll/api/event/EventRefObjSerializer.h"
+#include "mc/world/events/EventCoordinatorPimpl.h"
+#include "mc/world/level/block/Block.h"
 
 namespace Catalyst {
 
@@ -22,69 +24,50 @@ void ActorDestroyBlockEvent::serialize(CompoundTag& nbt) const {
     nbt["block"] = ll::event::serializeRefObj(block());
 }
 
-
 LL_TYPE_INSTANCE_HOOK(
-    ActorDestroyBlockHook,
-    ll::memory::HookPriority::Normal,
-    ::ActorEventCoordinator,
-    &::ActorEventCoordinator::sendEvent,
-    ::CoordinatorResult,
-    ::EventRef<::ActorGameplayEvent<::CoordinatorResult>> const& event
-) {
-    try {
-        const ActorGriefingBlockEvent* griefingEvent = nullptr;
-        event.get().visit([&](auto&& arg) {
-            using CurrentEventType = std::decay_t<decltype(arg.value())>;
-            if constexpr (std::is_same_v<CurrentEventType, ActorGriefingBlockEvent>) {
-                griefingEvent = &arg.value();
+    ActorDestroyBlockEventHook,
+    HookPriority::Normal,
+    EventCoordinatorPimpl<ActorEventListener>,
+    &EventCoordinatorPimpl<ActorEventListener>::_processEvent,
+    CoordinatorResult,
+    ActorGameplayHandler*                        handler,
+    ActorGameplayEvent<CoordinatorResult> const& event
+)
+try {
+    return event.visit([&](auto&& arg) {
+        using T = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<T, Details::ValueOrRef<ActorGriefingBlockEvent const>>) {
+            ActorGriefingBlockEvent const& griefingEvent = arg.value();
+            auto                           actor         = griefingEvent.mActorContext->tryUnwrap<Actor>();
+            if (!actor) {
+                return origin(handler, event);
             }
-        });
-
-        if (griefingEvent) {
-            WeakRef<EntityContext> actorContextWeakRef = griefingEvent->mActorContext.get();
-            auto                   actorContextResult  = actorContextWeakRef.lock();
-            if (actorContextResult) {
-                ::Actor* actor = Actor::tryGetFromEntity(actorContextResult.value(), false);
-                if (actor) {
-                    auto& bus = ll::event::EventBus::getInstance();
-
-                    ActorDestroyBlockBeforeEvent beforeEvent(
-                        *actor,
-                        griefingEvent->mPos.get(),
-                        *griefingEvent->mBlock.get()
-                    );
-                    bus.publish(beforeEvent);
-                    if (beforeEvent.isCancelled()) {
-                        return CoordinatorResult::Cancel;
-                    }
-
-                    auto result = origin(event);
-
+            auto&                        bus = ll::event::EventBus::getInstance();
+            ActorDestroyBlockBeforeEvent beforeEvent(*actor, griefingEvent.mPos, *griefingEvent.mBlock.get());
+            bus.publish(beforeEvent);
+            if (beforeEvent.isCancelled()) {
+                origin(handler, event);
+                return CoordinatorResult::Cancel;
+            }
+            auto result = origin(handler, event);
+            if (result != CoordinatorResult::Cancel) {
+                if (auto currentActor = griefingEvent.mActorContext->tryUnwrap<Actor>()) {
                     ActorDestroyBlockAfterEvent afterEvent(
-                        *actor,
-                        griefingEvent->mPos.get(),
-                        *griefingEvent->mBlock.get()
+                        *currentActor,
+                        griefingEvent.mPos,
+                        *griefingEvent.mBlock.get()
                     );
                     bus.publish(afterEvent);
-
-                    return result;
                 }
             }
+            return result;
         }
-        return origin(event);
-    } catch (const std::exception& e) {
-        logger.warn("ActorDestroyBlockHook 发生异常: {}", e.what());
-        return origin(event);
-    } catch (...) {
-        logger.warn("ActorDestroyBlockHook 发生未知异常！");
-        return origin(event);
-    }
+        return origin(handler, event);
+    });
+} catch (...) {
+    return origin(handler, event);
 }
 
-CATALYST_HOOKED_EVENT_PAIR(
-    ActorDestroyBlockBeforeEvent,
-    ActorDestroyBlockAfterEvent,
-    ActorDestroyBlockHook
-)
+CATALYST_HOOKED_EVENT_PAIR(ActorDestroyBlockBeforeEvent, ActorDestroyBlockAfterEvent, ActorDestroyBlockEventHook)
 
 } // namespace Catalyst
