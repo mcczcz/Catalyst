@@ -33,6 +33,9 @@ LL_TYPE_INSTANCE_HOOK(
     InteractionResult,
     Actor&            actor,
     Vec3 const&       location
+#ifdef LL_PLAT_S
+    , HandSlot        handSlot
+#endif
 ) {
     auto& bus = ll::event::EventBus::getInstance();
 
@@ -42,7 +45,11 @@ LL_TYPE_INSTANCE_HOOK(
         return InteractionResult{};
     }
 
-    InteractionResult result = origin(actor, location);
+    InteractionResult result = origin(actor, location
+#ifdef LL_PLAT_S
+        , handSlot
+#endif
+    );
 
     PlayerInteractEntityAfterEvent afterEvent(*this, actor, location, result);
     bus.publish(afterEvent);

@@ -5,6 +5,9 @@
 #include "ll/api/memory/Hook.h"
 #include "ll/api/service/Bedrock.h"
 #include "mc/network/NetworkSystem.h"
+#ifdef LL_PLAT_S
+#include "mc/network/LoopbackPacketSender.h"
+#endif
 #include "mc/network/ServerNetworkHandler.h"
 #include "mc/server/ServerPlayer.h"
 #include "mc/network/NetworkIdentifierWithSubId.h"
@@ -28,8 +31,13 @@ void SendMultiplePacketBeforeEvent::serialize(CompoundTag& nbt) const {
 LL_TYPE_INSTANCE_HOOK(
     SendMultiplePacketEventHook,
     ll::memory::HookPriority::Normal,
+#ifdef LL_PLAT_S
+    LoopbackPacketSender,
+    &LoopbackPacketSender::$sendToClients,
+#else
     NetworkSystem,
     &NetworkSystem::sendToMultiple,
+#endif
     void,
     std::vector<NetworkIdentifierWithSubId> const& ids,
     Packet const&                                  packet
