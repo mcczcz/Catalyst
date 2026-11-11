@@ -4,20 +4,31 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <map>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
+#include <variant>
 
 #include "catalyst/event/EmitterRegistration.h"
 #include "fmt/format.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/memory/Hook.h"
+#include "mc/deps/cereal/ContextArea.h"
+#include "mc/deps/cereal/schema/SchemaRWType.h"
+#include "mc/deps/cereal/schema/SchemaWriter.h"
+#include "mc/deps/cereal/schema/dynamic/NullType.h"
 #include "mc/deps/nbt/CompoundTag.h"
 #include "mc/deps/nbt/CompoundTagVariant.h"
 #include "mc/deps/raknet/DefaultMessageIDTypes.h"
 #include "mc/deps/raknet/RNS2_SendParameters.h"
 #include "mc/deps/raknet/RNS2_Windows.h"
 #include "mc/deps/raknet/SystemAddress.h"
+#include "mc/external/webrtc/Socket.h"
+#include "mc/external/webrtc/SocketAddress.h"
+#include "mc/network/NetherNetServerLocator.h"
 
 namespace {
 
@@ -25,6 +36,30 @@ using Catalyst::ServerPongAfterEvent;
 using Catalyst::ServerPongBeforeEvent;
 
 constexpr std::size_t kUnconnectedPongHeaderSize = 35;
+
+thread_local std::string const* currentNetherNetPongAddress = nullptr;
+
+class NetherNetPongAddressScope {
+    std::string        mAddress;
+    std::string const* mPrevious;
+
+public:
+    NetherNetPongAddressScope(NetherNetPongAddressScope const&)            = delete;
+    NetherNetPongAddressScope& operator=(NetherNetPongAddressScope const&) = delete;
+
+    explicit NetherNetPongAddressScope(std::string address)
+    : mAddress(std::move(address)),
+      mPrevious(std::exchange(currentNetherNetPongAddress, &mAddress)) {}
+    ~NetherNetPongAddressScope() { currentNetherNetPongAddress = mPrevious; }
+};
+
+std::string netherNetAddress(webrtc::SocketAddress const& address) {
+    if (address.IsNil() || address.IsAnyIP()) return {};
+    auto ip = address.ip_->ToString();
+    // The dual-stack discovery/listen sockets report IPv4 peers as mapped IPv6.
+    if (ip.starts_with("::ffff:") && ip.find('.') != std::string::npos) ip.erase(0, 7);
+    return fmt::format("{}|{}", ip, address.port_);
+}
 
 struct PongPayloadData {
     std::string              motd;
@@ -104,6 +139,194 @@ std::uint16_t extractPort(std::string const& ipAndPort) {
     std::uint16_t port{};
     return parseUint16(std::string_view(ipAndPort).substr(pos + 1), port) ? port : 0;
 }
+
+// The first pass only reads the cached ServerData through the schema. Publishing
+// after it returns also keeps listeners outside the locator's internal mutex.
+// The second pass retains the real writer's scalar types and container behaviour.
+class NetherNetPongWriter final : public cereal::SchemaWriter {
+    using Field = std::variant<bool, int64, uint64, double, std::string>;
+    cereal::SchemaWriter&                     mWriter;
+    ServerPongBeforeEvent const*              mEvent;
+    std::vector<std::string>                  mMemberPath;
+    std::map<std::string, Field, std::less<>> mFields;
+
+    std::string_view member() const { return mMemberPath.empty() ? std::string_view{} : mMemberPath.back(); }
+
+    template <typename T>
+    T field(std::string_view name, T fallback = {}) const {
+        auto it = mFields.find(name);
+        if (it == mFields.end()) {
+            return fallback;
+        }
+        return std::visit(
+            [&](auto const& value) -> T {
+                using V = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, V>) {
+                    return value;
+                } else if constexpr (std::is_arithmetic_v<T> && std::is_arithmetic_v<V>) {
+                    return static_cast<T>(value);
+                }
+                return fallback;
+            },
+            it->second
+        );
+    }
+
+    template <typename T>
+    std::optional<T> optionalField(std::string_view name) const {
+        return mFields.contains(name) ? std::optional<T>(field<T>(name)) : std::nullopt;
+    }
+
+    static std::string gameModeName(int value) {
+        switch (value) {
+        case 0:
+            return "Survival";
+        case 1:
+            return "Creative";
+        case 2:
+            return "Adventure";
+        case 6:
+            return "Spectator";
+        default:
+            return std::to_string(value);
+        }
+    }
+
+    int gameModeValue(int fallback) const {
+        auto const& mode = mEvent->gameMode();
+        if (mode == "Survival") return 0;
+        if (mode == "Creative") return 1;
+        if (mode == "Adventure") return 2;
+        if (mode == "Spectator") return 6;
+        int value{};
+        return parseInteger(mode, value) ? value : fallback;
+    }
+
+    template <typename T>
+    bool writeNumber(T value) {
+        auto key = member();
+        if (!mEvent) {
+            if constexpr (std::is_same_v<T, bool>) {
+                mFields.insert_or_assign(std::string(key), value);
+            } else if constexpr (std::is_floating_point_v<T>) {
+                mFields.insert_or_assign(std::string(key), static_cast<double>(value));
+            } else if constexpr (std::is_signed_v<T>) {
+                mFields.insert_or_assign(std::string(key), static_cast<int64>(value));
+            } else {
+                mFields.insert_or_assign(std::string(key), static_cast<uint64>(value));
+            }
+            return true;
+        }
+        if constexpr (!std::is_same_v<T, bool> && !std::is_floating_point_v<T>) {
+            if (key == "protocol") value = static_cast<T>(mEvent->protocolVersion());
+            else if (key == "players") value = static_cast<T>(mEvent->playerCount());
+            else if (key == "maxPlayers") value = static_cast<T>(mEvent->maxPlayerCount());
+            else if (key == "gameType") value = static_cast<T>(gameModeValue(static_cast<int>(value)));
+        }
+        if (auto const& data = mEvent->netherNetData()) {
+            if (key == "dataVersion") value = data->dataVersion ? static_cast<T>(*data->dataVersion) : value;
+            else if (key == "editor") value = data->editorWorld ? static_cast<T>(*data->editorWorld) : value;
+            else if (key == "hardcore") value = data->hardcore ? static_cast<T>(*data->hardcore) : value;
+            else if (key == "onlineAuth") value = data->onlineAuth ? static_cast<T>(*data->onlineAuth) : value;
+            else if (key == "selfSignedAuth")
+                value = data->selfSignedAuth ? static_cast<T>(*data->selfSignedAuth) : value;
+            else if (key == "connection") value = data->connection ? static_cast<T>(*data->connection) : value;
+        }
+        return mWriter.write(value);
+    }
+
+public:
+    explicit NetherNetPongWriter(cereal::SchemaWriter& writer, ServerPongBeforeEvent const* event = nullptr)
+    : mWriter(writer),
+      mEvent(event) {
+        mSerializationTraitsOverride = writer.mSerializationTraitsOverride;
+        mSerializationTraits         = writer.mSerializationTraits;
+    }
+
+    bool hasServerName() const { return mFields.contains("name"); }
+
+    ServerPongBeforeEvent event() const {
+        Catalyst::ServerPongNetherNetData data;
+        data.dataVersion    = optionalField<std::uint8_t>("dataVersion");
+        data.editorWorld    = optionalField<bool>("editor");
+        data.hardcore       = optionalField<bool>("hardcore");
+        data.onlineAuth     = optionalField<bool>("onlineAuth");
+        data.selfSignedAuth = optionalField<bool>("selfSignedAuth");
+        data.nonce          = optionalField<std::string>("nonce");
+        data.connection     = optionalField<std::uint32_t>("connection");
+        return ServerPongBeforeEvent(
+            field<std::string>("name"),
+            field<int>("protocol"),
+            field<std::string>("version"),
+            field<int>("players"),
+            field<int>("maxPlayers"),
+            std::string{},
+            field<std::string>("level"),
+            gameModeName(field<int>("gameType")),
+            0,
+            0,
+            std::vector<std::string>{},
+            currentNetherNetPongAddress ? *currentNetherNetPongAddress : std::string{},
+            std::move(data)
+        );
+    }
+
+    bool write(cereal::NullType value) override { return !mEvent || mWriter.write(value); }
+    bool write(bool value) override { return writeNumber(value); }
+    bool write(schar value) override { return writeNumber(value); }
+    bool write(uchar value) override { return writeNumber(value); }
+    bool write(short value) override { return writeNumber(value); }
+    bool write(ushort value) override { return writeNumber(value); }
+    bool write(int value) override { return writeNumber(value); }
+    bool write(uint value) override { return writeNumber(value); }
+    bool write(int64 value) override { return writeNumber(value); }
+    bool write(uint64 value) override { return writeNumber(value); }
+    bool write(float value) override { return writeNumber(value); }
+    bool write(double value) override { return writeNumber(value); }
+
+    bool write(std::string_view const value) override {
+        auto key = member();
+        if (!mEvent) {
+            mFields.insert_or_assign(std::string(key), std::string(value));
+            return true;
+        }
+        if (key == "name") return mWriter.write(mEvent->motd());
+        if (key == "version") return mWriter.write(mEvent->networkVersion());
+        if (key == "level") return mWriter.write(mEvent->levelName());
+        if (key == "nonce" && mEvent->netherNetData() && mEvent->netherNetData()->nonce) {
+            return mWriter.write(*mEvent->netherNetData()->nonce);
+        }
+        return mWriter.write(value);
+    }
+
+    bool write(gsl::span<uchar const> view) override { return !mEvent || mWriter.write(view); }
+    void writeAdditionalData(bool value) override {
+        if (mEvent) mWriter.writeAdditionalData(value);
+    }
+    void writeAdditionalData(uint value) override {
+        if (mEvent) mWriter.writeAdditionalData(value);
+    }
+    void writeAdditionalData(std::string_view const value) override {
+        if (mEvent) mWriter.writeAdditionalData(value);
+    }
+
+    bool pushMember(std::string_view const value) override {
+        if (mEvent && !mWriter.pushMember(value)) return false;
+        mMemberPath.emplace_back(value);
+        return true;
+    }
+    void popMember() override {
+        if (mEvent) mWriter.popMember();
+        if (!mMemberPath.empty()) mMemberPath.pop_back();
+    }
+    cereal::SchemaRWType openObject() override { return mEvent ? mWriter.openObject() : cereal::SchemaRWType::Object; }
+    cereal::SchemaRWType openArray(bool isDynamicExtent, uint64 length) override {
+        return mEvent ? mWriter.openArray(isDynamicExtent, length) : cereal::SchemaRWType::Array;
+    }
+    void close() override {
+        if (mEvent) mWriter.close();
+    }
+};
 
 std::optional<PongPayloadData> parsePongPayload(std::string_view payload, std::string ipAndPort) {
     auto parts = splitPongPayload(payload);
@@ -214,12 +437,26 @@ void serializePongFields(
     nbt["others"] = ListTag(std::move(others));
 }
 
+void serializeNetherNetData(CompoundTag& nbt, std::optional<Catalyst::ServerPongNetherNetData> const& data) {
+    if (!data) return;
+    CompoundTag fields;
+    if (data->dataVersion) fields["dataVersion"] = static_cast<int>(*data->dataVersion);
+    if (data->editorWorld) fields["editor"] = *data->editorWorld;
+    if (data->hardcore) fields["hardcore"] = *data->hardcore;
+    if (data->onlineAuth) fields["onlineAuth"] = *data->onlineAuth;
+    if (data->selfSignedAuth) fields["selfSignedAuth"] = *data->selfSignedAuth;
+    if (data->nonce) fields["nonce"] = *data->nonce;
+    if (data->connection) fields["connection"] = static_cast<int64>(*data->connection);
+    nbt["netherNet"] = std::move(fields);
+}
+
 } // namespace
 
 namespace Catalyst {
 
 void ServerPongBeforeEvent::serialize(CompoundTag& nbt) const {
     Cancellable::serialize(nbt);
+    serializeNetherNetData(nbt, netherNetData());
     serializePongFields(
         nbt,
         motd(),
@@ -239,6 +476,7 @@ void ServerPongBeforeEvent::serialize(CompoundTag& nbt) const {
 
 void ServerPongAfterEvent::serialize(CompoundTag& nbt) const {
     ll::event::Event::serialize(nbt);
+    serializeNetherNetData(nbt, netherNetData());
     serializePongFields(
         nbt,
         motd(),
@@ -265,6 +503,115 @@ std::string ServerPongAfterEvent::ip() const { return extractIp(mIpAndPort); }
 std::uint16_t ServerPongAfterEvent::port() const { return extractPort(mIpAndPort); }
 
 #ifdef LL_PLAT_S
+
+using namespace ll::memory_literals;
+
+// Decrypted LAN receive callback (IDA 0x141119050). The native packet view
+// contains a SocketAddress pointer at +32; the payload starts with length/type.
+LL_STATIC_HOOK(
+    NetherNetLanPongAddressHook,
+    ll::memory::HookPriority::Normal,
+    "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ?? ?? ?? ?? 48 8D AC 24 ?? ?? ?? ?? 48 C7 85 ?? ?? ?? ?? FE FF FF FF 49 8B 58 08 48 83 FB 04 72 ?? 4D 8B 20"_sig,
+    void,
+    void*       self,
+    void*       unused,
+    void const* packet
+) {
+    auto const*                  bytes = static_cast<std::byte const*>(packet);
+    unsigned char const*         payload{};
+    std::size_t                  length{};
+    webrtc::SocketAddress const* address{};
+    std::memcpy(&payload, bytes, sizeof(payload));
+    std::memcpy(&length, bytes + 8, sizeof(length));
+    std::memcpy(&address, bytes + 32, sizeof(address));
+    if (payload && length >= 20 && payload[2] == 0 && payload[3] == 0 && address) {
+        NetherNetPongAddressScope scope(netherNetAddress(*address));
+        origin(self, unused, packet);
+    } else {
+        origin(self, unused, packet);
+    }
+}
+
+// HttpConnection::_onReadEvent (IDA 0x141120770). Native mSocket is at +168.
+// /v1/join invokes mGetServerInfo synchronously before scheduling the response.
+LL_STATIC_HOOK(
+    NetherNetHttpPongAddressHook,
+    ll::memory::HookPriority::Normal,
+    "55 41 57 41 56 41 55 41 54 56 57 53 B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 29 C4 48 8D AC 24 ?? ?? ?? ?? 0F 29 BD ?? ?? ?? ?? 0F 29 B5 ?? ?? ?? ?? 48 C7 85 ?? ?? ?? ?? FE FF FF FF 48 89 CE 48 8D 7D"_sig,
+    void,
+    void* self
+) {
+    webrtc::Socket* socket{};
+    std::memcpy(&socket, static_cast<std::byte const*>(self) + 168, sizeof(socket));
+    std::string address;
+    if (socket) {
+        auto remote = socket->GetRemoteAddress();
+        address     = netherNetAddress(remote);
+    }
+    NetherNetPongAddressScope scope(std::move(address));
+    origin(self);
+}
+
+// NetherNetServerLocator::_onDiscoveryRequest, verified on E:\ll2660 (1.26.60.6).
+// The prologue,
+// disabled-state check, and SchemaWriter/ContextArea argument use were verified
+// in IDA; the wildcarded signature is unique in that server binary.
+LL_STATIC_HOOK(
+    NetherNetServerPongEventHook,
+    ll::memory::HookPriority::Normal,
+    "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ?? ?? ?? ?? 48 8D AC 24 ?? ?? ?? ?? 48 C7 85 ?? ?? ?? ?? FE FF FF FF 83 79 08 01"_sig,
+    bool,
+    NetherNetServerLocator* self,
+    cereal::SchemaWriter&   writer,
+    cereal::ContextArea     area
+) {
+    std::optional<ServerPongBeforeEvent> beforeEvent;
+    try {
+        NetherNetPongWriter collector(writer);
+        if (!origin(self, collector, area)) {
+            return false;
+        }
+        if (collector.hasServerName()) {
+            beforeEvent.emplace(collector.event());
+            ll::event::EventBus::getInstance().publish(*beforeEvent);
+        }
+    } catch (...) {
+        // The collector never touches the real writer, so the original response is safe.
+        return origin(self, writer, area);
+    }
+    if (!beforeEvent) {
+        return origin(self, writer, area);
+    }
+    if (beforeEvent->isCancelled()) {
+        return false;
+    }
+
+    NetherNetPongWriter eventWriter(writer, &*beforeEvent);
+    bool                sent = origin(self, eventWriter, area);
+    if (sent) {
+        try {
+            ServerPongAfterEvent afterEvent(
+                beforeEvent->motd(),
+                beforeEvent->protocolVersion(),
+                beforeEvent->networkVersion(),
+                beforeEvent->playerCount(),
+                beforeEvent->maxPlayerCount(),
+                beforeEvent->guid(),
+                beforeEvent->levelName(),
+                beforeEvent->gameMode(),
+                beforeEvent->localPort(),
+                beforeEvent->localPortV6(),
+                beforeEvent->other(),
+                beforeEvent->ipAndPort(),
+                beforeEvent->netherNetData()
+            );
+            ll::event::EventBus::getInstance().publish(afterEvent);
+        } catch (...) {
+            // The discovery response has already been written.
+        }
+    }
+    return sent;
+}
 
 // macOS RNS2_Linux::Send uses the same RakNetSocket2::Send interface.
 // On Windows the concrete implementation is RNS2_Windows::$Send.
@@ -377,7 +724,14 @@ LL_TYPE_INSTANCE_HOOK(
     return result;
 }
 
-CATALYST_HOOKED_EVENT_PAIR(ServerPongBeforeEvent, ServerPongAfterEvent, ServerPongEventHook)
+CATALYST_HOOKED_EVENT_PAIR(
+    ServerPongBeforeEvent,
+    ServerPongAfterEvent,
+    ServerPongEventHook,
+    NetherNetServerPongEventHook,
+    NetherNetLanPongAddressHook,
+    NetherNetHttpPongAddressHook
+)
 
 #endif
 

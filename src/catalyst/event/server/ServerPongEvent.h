@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,18 @@
 #include "ll/api/event/Event.h"
 
 namespace Catalyst {
+
+// Only present for NetherNet responses. Common fields use the existing event accessors.
+struct ServerPongNetherNetData {
+    // Empty fields are not serialized by the current transport/context.
+    std::optional<std::uint8_t>  dataVersion;
+    std::optional<bool>          editorWorld;
+    std::optional<bool>          hardcore;
+    std::optional<bool>          onlineAuth;
+    std::optional<bool>          selfSignedAuth;
+    std::optional<std::string>   nonce;
+    std::optional<std::uint32_t> connection;
+};
 
 class CATALYST_API ServerPongBeforeEvent final : public ll::event::Cancellable<ll::event::Event> {
     std::string              mMotd;
@@ -24,6 +37,8 @@ class CATALYST_API ServerPongBeforeEvent final : public ll::event::Cancellable<l
     std::vector<std::string> mOther;
     std::string              mIpAndPort;
 
+    std::optional<ServerPongNetherNetData> mNetherNetData;
+
 public:
     ServerPongBeforeEvent(
         std::string              motd,
@@ -37,7 +52,8 @@ public:
         std::uint16_t            localPort,
         std::uint16_t            localPortV6,
         std::vector<std::string> other,
-        std::string              ipAndPort
+        std::string              ipAndPort,
+        std::optional<ServerPongNetherNetData> netherNetData = std::nullopt
     )
     : Cancellable(),
       mMotd(std::move(motd)),
@@ -51,7 +67,8 @@ public:
       mLocalPort(localPort),
       mLocalPortV6(localPortV6),
       mOther(std::move(other)),
-      mIpAndPort(std::move(ipAndPort)) {}
+      mIpAndPort(std::move(ipAndPort)),
+      mNetherNetData(std::move(netherNetData)) {}
 
     void serialize(CompoundTag&) const override;
 
@@ -80,6 +97,9 @@ public:
     std::string const&        ipAndPort() const { return mIpAndPort; }
     std::string               ip() const;
     std::uint16_t             port() const;
+
+    std::optional<ServerPongNetherNetData>& netherNetData() { return mNetherNetData; }
+    std::optional<ServerPongNetherNetData> const& netherNetData() const { return mNetherNetData; }
 };
 
 class CATALYST_API ServerPongAfterEvent final : public ll::event::Event {
@@ -96,6 +116,8 @@ class CATALYST_API ServerPongAfterEvent final : public ll::event::Event {
     std::vector<std::string> mOther;
     std::string              mIpAndPort;
 
+    std::optional<ServerPongNetherNetData> mNetherNetData;
+
 public:
     ServerPongAfterEvent(
         std::string              motd,
@@ -109,7 +131,8 @@ public:
         std::uint16_t            localPort,
         std::uint16_t            localPortV6,
         std::vector<std::string> other,
-        std::string              ipAndPort
+        std::string              ipAndPort,
+        std::optional<ServerPongNetherNetData> netherNetData = std::nullopt
     )
     : Event(),
       mMotd(std::move(motd)),
@@ -123,7 +146,8 @@ public:
       mLocalPort(localPort),
       mLocalPortV6(localPortV6),
       mOther(std::move(other)),
-      mIpAndPort(std::move(ipAndPort)) {}
+      mIpAndPort(std::move(ipAndPort)),
+      mNetherNetData(std::move(netherNetData)) {}
 
     void serialize(CompoundTag&) const override;
 
@@ -141,6 +165,8 @@ public:
     std::string const&        ipAndPort() const { return mIpAndPort; }
     std::string               ip() const;
     std::uint16_t             port() const;
+
+    std::optional<ServerPongNetherNetData> const& netherNetData() const { return mNetherNetData; }
 };
 
 } // namespace Catalyst

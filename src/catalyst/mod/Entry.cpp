@@ -50,12 +50,14 @@ bool Entry::enable() {
 }
 
 bool Entry::disable() {
+    Test::unregisterEventTests();
     getSelf().getLogger().debug("Disabling...");
     logger.info(tr("plugin.unloaded"));
     return true;
 }
 
 bool Entry::unload() {
+    Test::unregisterEventTests();
     getSelf().getLogger().debug("Unloading...");
     return true;
 }   

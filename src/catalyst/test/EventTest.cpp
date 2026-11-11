@@ -24,6 +24,7 @@
 
 #include "catalyst/event/server/ClientLoginEvent.h"
 #include "catalyst/event/server/ReceivePacketEvent.h"
+#include "catalyst/event/server/ServerPongEvent.h"
 #include "catalyst/event/world/block/BlockExplodedEvent.h"
 #include "catalyst/event/world/block/BlockFallEvent.h"
 #include "catalyst/event/world/block/BlockPistonEvent.h"
@@ -45,8 +46,65 @@
 
 namespace Catalyst::Test {
 
-void registerEventTests() {
+namespace {
+std::vector<ll::event::ListenerPtr> testListeners;
+
+struct TestListenerRegistrar {
+    template <typename Event, typename Callback>
+    void emplaceListener(Callback&& callback) {
+        auto listener = ll::event::EventBus::getInstance().emplaceListener<Event>(std::forward<Callback>(callback));
+        if (listener) testListeners.emplace_back(std::move(listener));
+    }
+};
+} // namespace
+
+void unregisterEventTests() {
     auto& bus = ll::event::EventBus::getInstance();
+    for (auto const& listener : testListeners) bus.removeListener(listener);
+    testListeners.clear();
+}
+
+void registerEventTests() {
+    unregisterEventTests();
+    TestListenerRegistrar bus;
+
+    bus.emplaceListener<ServerPongBeforeEvent>([](ServerPongBeforeEvent& event) {
+        logger.info("ServerPongBeforeAddress: ip={}, port={}", event.ip(), event.port());
+        logger.info(
+            "ServerPongBeforeEvent: motd='{}', players={}/{}, protocol={}, version={}, level='{}', mode={}",
+            event.motd(),
+            event.playerCount(),
+            event.maxPlayerCount(),
+            event.protocolVersion(),
+            event.networkVersion(),
+            event.levelName(),
+            event.gameMode()
+        );
+        if (auto& data = event.netherNetData()) {
+            if (data->dataVersion && data->connection) {
+                logger.info("NetherNet: dataVersion={}, connection={}", *data->dataVersion, *data->connection);
+            }
+            event.playerCount()    = 12;
+            event.maxPlayerCount() = 64;
+            event.levelName()      = "NetherNet Level TEST";
+            event.gameMode()       = "Creative";
+            if (data->hardcore) data->hardcore = true;
+        }
+        event.motd() = "NetherNet MOTD TEST";
+    });
+
+    bus.emplaceListener<ServerPongAfterEvent>([](ServerPongAfterEvent& event) {
+        logger.info("ServerPongAfterAddress: ip={}, port={}", event.ip(), event.port());
+        logger.info(
+            "ServerPongAfterEvent: motd='{}', players={}/{}, version={}, level='{}', mode={}",
+            event.motd(),
+            event.playerCount(),
+            event.maxPlayerCount(),
+            event.networkVersion(),
+            event.levelName(),
+            event.gameMode()
+        );
+    });
 
     bus.emplaceListener<PlayerStartSleepBeforeEvent>([](PlayerStartSleepBeforeEvent& event) {
         auto const& pos = event.getBedBlockPos();
