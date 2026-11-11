@@ -368,7 +368,7 @@ LL_TYPE_INSTANCE_HOOK(
 
     auto const& fireBlock     = region.getBlock(firePos);
     int         age           = fireBlock.getState<int>(VanillaStates::Age()).value_or(0);
-    auto const  belowMaterial = region.getBlock(belowPos).mBlockType->mMaterial.mType;
+    auto const  belowMaterial = region.getBlock(belowPos).mBlockType->mMaterial->mType;
 
     // 非无限燃烧且 age < 15 时增加 age 并写回；之后 currentFire 即为世界中当前的火焰方块
     Block const* currentFire = &fireBlock;
@@ -394,7 +394,7 @@ LL_TYPE_INSTANCE_HOOK(
         }
 
         if (isValidFireLocation(region, firePos)
-            && region.getLiquidBlock(belowPos).mBlockType->mMaterial.mType
+            && region.getLiquidBlock(belowPos).mBlockType->mMaterial->mType
                    != SharedTypes::v1_26_20::MaterialType::Water) {
             auto const belowFlameOdds = static_cast<ushort>(region.getBlock(belowPos).mDirectData->mFlameOdds);
             if (age == 15 && belowFlameOdds == 0 && random.nextInt(4) == 0) {

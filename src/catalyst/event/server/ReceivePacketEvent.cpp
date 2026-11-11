@@ -13,6 +13,9 @@
 #include "mc/gameplayhandlers/CoordinatorResult.h"
 #include "mc/gameplayhandlers/GameplayHandlerResult.h"
 #include "mc/network/IPacketHandlerDispatcher.h"
+#ifdef LL_PLAT_S
+#include "mc/network/BatchedNetworkPeer.h"
+#endif
 #include "mc/network/MinecraftPacketIds.h"
 #include "mc/network/MinecraftPackets.h"
 #include "mc/network/NetworkConnection.h"
@@ -157,15 +160,39 @@ void ReceivePacketEvent::serialize(CompoundTag& nbt) const {
 LL_TYPE_INSTANCE_HOOK(
     ReceivePacketEventHook,
     ll::memory::HookPriority::Normal,
+#ifdef LL_PLAT_S
+    BatchedNetworkPeer,
+    &BatchedNetworkPeer::$_receivePacket,
+#else
     NetworkConnection,
     &NetworkConnection::receivePacket,
+#endif
     ::NetworkPeer::DataStatus,
     ::std::string&                                                    receiveBuffer,
     ::std::shared_ptr<::std::chrono::steady_clock::time_point> const& timepointPtr
 ) {
     auto network_handler = ll::service::getServerNetworkHandler();
+    auto network         = ll::service::getNetworkSystem();
+    if (!network_handler || !network) {
+        return origin(receiveBuffer, timepointPtr);
+    }
+#ifdef LL_PLAT_S
+    // NetworkConnection::receivePacket is inlined in 26.60. Intercept the
+    // decoded batch packets and recover their connection from its peer.
+    NetworkConnection* connection = nullptr;
+    for (auto const& candidate : network->mConnections.get()) {
+        if (candidate->mBatchedPeer.lock().get() == this) {
+            connection = candidate.get();
+            break;
+        }
+    }
+    if (!connection) {
+        return origin(receiveBuffer, timepointPtr);
+    }
+#else
+    auto* connection = this;
+#endif
     while (true) {
-        auto       network = ll::service::getNetworkSystem();
         const auto status  = origin(receiveBuffer, timepointPtr);
         if (status != NetworkPeer::DataStatus::HasData) {
             return status;
@@ -178,16 +205,16 @@ LL_TYPE_INSTANCE_HOOK(
         const auto header        = header_result.value();
         const auto packet_id     = static_cast<MinecraftPacketIds>(header & 0x3ff);
         const auto sub_client_id = static_cast<SubClientId>((header >> 12) & 0x3);
-        auto*      p             = network_handler->_getServerPlayer(mId, sub_client_id);
+        auto*      p             = network_handler->_getServerPlayer(connection->mId, sub_client_id);
         const auto payload       = stream.mView.substr(stream.mReadPointer);
         auto       packet        = MinecraftPackets::createPacket(packet_id);
         if (!packet) {
             continue;
         }
 
-        auto now                  = std::chrono::steady_clock::now();
-        this->mLastPacketTime     = now;
-        packet->mReceiveTimepoint = now;
+        auto now                   = std::chrono::steady_clock::now();
+        connection->mLastPacketTime = now;
+        packet->mReceiveTimepoint   = now;
         ReadOnlyBinaryStream read_stream(payload, false);
         auto                 packet_size = read_stream.mView.size() - read_stream.mReadPointer;
         if (auto result = packet->checkSize(packet_size, true); !result.Base::has_value()) {
@@ -201,15 +228,15 @@ LL_TYPE_INSTANCE_HOOK(
         }
 
         auto&                    bus = ll::event::EventBus::getInstance();
-        ReceivePacketBeforeEvent beforeEvent(mId, *packet, sub_client_id, p);
+        ReceivePacketBeforeEvent beforeEvent(connection->mId, *packet, sub_client_id, p);
         bus.publish(beforeEvent);
         if (beforeEvent.isCancelled()) {
             continue;
         }
 
-        packet->mHandler->handle(mId, *network_handler, packet);
+        packet->mHandler->handle(connection->mId, *network_handler, packet);
 
-        ReceivePacketAfterEvent afterEvent(mId, *packet, sub_client_id, p);
+        ReceivePacketAfterEvent afterEvent(connection->mId, *packet, sub_client_id, p);
         bus.publish(afterEvent);
     }
 }

@@ -165,7 +165,7 @@ LL_TYPE_INSTANCE_HOOK(
                         continue;
                     }
 
-                    auto const materialType = block.mBlockType->mMaterial.mType;
+                    auto const materialType = block.mBlockType->mMaterial->mType;
                     if (materialType == SharedTypes::v1_26_20::MaterialType::Air
                         || materialType == SharedTypes::v1_26_20::MaterialType::Fire) {
                         continue;
