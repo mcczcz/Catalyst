@@ -87,7 +87,7 @@ static std::string getIPFromRakPeerUnsafe(RakNet::RakNetGUID const& guid) {
 namespace {
 
 // Native NetherNet layouts and the signature below were checked in the stripped
-// 26.51.9 server. See docs/client-login-nethernet.md before updating these offsets.
+// 1.26.62.1 server. See docs/client-login-nethernet.md before updating these offsets.
 constexpr size_t observerOffset       = 88;
 constexpr size_t peerObserverOffset   = 16;
 constexpr size_t dataChannelOffset    = 96;
@@ -204,10 +204,12 @@ using namespace ll::memory_literals;
 
 // NetworkSession::InitializeIncoming: the two native by-value aggregates are
 // passed indirectly on Win64. Forward their pointers without copying ownership.
+// 1.26.62.1 entry: 0x1410FB2D0. Wildcard stack-frame sizes/offsets, retaining
+// the incoming state and remote NetworkID stores to identify the function.
 LL_STATIC_HOOK(
     NetherNetIncomingAddressHook,
     ll::memory::HookPriority::Normal,
-    "55 41 57 41 56 56 57 53 48 81 EC 48 02 00 00 48 8D AC 24 80 00 00 00 48 C7 85 C0 01 00 00 FE FF FF FF 4C 89 C6 48 89 CF 4C 8B 85 20 02 00 00 48 B8 00 00 00 00 01 00 00 00 48 89 41 30 0F 10 02 0F 11 41 40"_sig,
+    "55 41 57 41 56 41 54 56 57 53 48 81 EC ?? ?? ?? ?? 48 8D AC 24 ?? ?? ?? ?? 48 C7 85 ?? ?? ?? ?? FE FF FF FF 4C 89 C6 48 89 CF 48 B8 00 00 00 00 01 00 00 00 48 89 41 30 0F 10 02 0F 11 41 40"_sig,
     void,
     void*                       session,
     NetherNet::NetworkID const& remoteId,

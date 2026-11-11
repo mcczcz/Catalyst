@@ -1,5 +1,17 @@
 add_rules("mode.debug", "mode.release")
 
+rule("build.single_job")
+    set_kind("project")
+    before_build(function ()
+        import("core.base.option")
+        if not option.options().jobs then
+            option.set("jobs", 1)
+        end
+    end)
+rule_end()
+
+add_rules("build.single_job")
+
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
 -- add_requires("levilamina x.x.x") for a specific version
 -- add_requires("levilamina develop") to use develop version
